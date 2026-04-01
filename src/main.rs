@@ -99,8 +99,15 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wa
     let spinner_for_closure = spinner_ref.clone();
 
     let result = wallet::sync_wallet_with_progress(wallet_data, move |done, total| {
-        if total > 0 {
-            spinner_for_closure.set_progress(done as f64 / total as f64, None);
+        if total == 0 && done == 0 {
+            // Phase 1: fetching address info
+            spinner_for_closure.set_progress(0.0, Some("Fetching address"));
+        } else if done == 0 {
+            // Phase 2: address info fetched, about to start tx fetches
+            spinner_for_closure.set_progress(0.0, Some("Syncing"));
+        } else {
+            // Phase 3: fetching transactions
+            spinner_for_closure.set_progress(done as f64 / total as f64, Some("Syncing"));
         }
     });
 

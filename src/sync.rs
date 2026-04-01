@@ -238,12 +238,20 @@ pub fn sync_address(
 }
 
 /// Like [`sync_address`], but calls `on_progress(completed, total)` after each tx fetch.
+///
+/// Progress phases:
+/// - `(0, 0)` — fetching address info (txid list)
+/// - `(0, N)` — address info fetched, N transactions to process
+/// - `(i, N)` — fetched i of N transactions
 pub fn sync_address_with_progress(
     client: &ExplorerClient,
     address: &str,
     known_txids: &HashSet<String>,
     on_progress: impl Fn(usize, usize),
 ) -> Result<SyncResult, SyncError> {
+    // Signal: fetching address info
+    on_progress(0, 0);
+
     // 1. Get all txids for this address
     let all_txids = client.get_address_txids(address)?;
 
@@ -254,6 +262,9 @@ pub fn sync_address_with_progress(
 
     let new_tx_count = new_txids.len();
     let total = all_txids.len();
+
+    // Signal: we know the total now
+    on_progress(0, total);
 
     // 3. Fetch and process ALL txids to rebuild UTXO state.
     let mut state = SyncState::new();
