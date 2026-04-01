@@ -357,10 +357,15 @@ pub fn sync_incremental(
     let utxos = state.derive_utxos();
     let balance = utxos.iter().map(|u| u.amount).sum();
 
-    // Merge history: new entries (newest first) prepended to prior
+    // Merge history: new entries (newest first) prepended to prior, deduplicated
     new_history.reverse();
+    let seen: HashSet<String> = new_history.iter().map(|e| e.txid.clone()).collect();
     let mut history = new_history;
-    history.extend_from_slice(prior_history);
+    for entry in prior_history {
+        if !seen.contains(&entry.txid) {
+            history.push(entry.clone());
+        }
+    }
 
     Ok(SyncResult {
         utxos,
