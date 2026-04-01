@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings -A clippy::empty-line-after-doc-comments -A clippy::doc-nested-refdefs -A clippy::manual-is-multiple-of -A clippy::manual-div-ceil -A clippy::large-const-arrays -A clippy::redundant-closure -A clippy::collapsible-if -A clippy::vec-init-then-push -A clippy::ptr-arg -A clippy::if-same-then-else
