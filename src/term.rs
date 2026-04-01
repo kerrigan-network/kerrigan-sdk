@@ -200,31 +200,24 @@ impl Drop for Spinner {
 
 /// Get the terminal width in columns. Falls back to 80 if detection fails.
 pub fn terminal_width() -> usize {
-    // Try the COLUMNS env var first
+    #[cfg(unix)]
+    {
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0
+            && ws.ws_col > 0
+        {
+            return ws.ws_col as usize;
+        }
+    }
+
+    // Fallback: COLUMNS env var
     if let Ok(cols) = std::env::var("COLUMNS") {
         if let Ok(w) = cols.parse::<usize>() {
             if w > 0 { return w; }
         }
     }
 
-    // Try `stty size` (works on macOS and Linux)
-    if let Ok(output) = std::process::Command::new("stty")
-        .arg("size")
-        .stdin(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if let Ok(s) = String::from_utf8(output.stdout) {
-            // Output is "rows cols\n"
-            if let Some(cols_str) = s.trim().split_whitespace().nth(1) {
-                if let Ok(w) = cols_str.parse::<usize>() {
-                    if w > 0 { return w; }
-                }
-            }
-        }
-    }
-
-    80 // fallback
+    80
 }
 
 // ---------------------------------------------------------------------------

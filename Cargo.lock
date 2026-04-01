@@ -280,6 +280,7 @@ dependencies = [
  "dirs",
  "getrandom",
  "hmac",
+ "libc",
  "machine-uid",
  "ripemd",
  "secp256k1",
