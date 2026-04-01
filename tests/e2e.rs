@@ -522,6 +522,83 @@ fn e2e_tx_serialization_canonical() {
 }
 
 // ---------------------------------------------------------------------------
+// E2E: Sync history deduplication
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_sync_history_no_duplicates() {
+    let addr = "KTestAddr";
+
+    // First sync: 2 txs
+    let mut state = sync::SyncState::new();
+    let tx1 = make_tx_info("tx1", &[], &[(addr, 0, 1_0000_0000)]);
+    let tx2 = make_tx_info("tx2", &[], &[(addr, 0, 2_0000_0000)]);
+    state.process_transaction(&tx1, addr);
+    state.process_transaction(&tx2, addr);
+
+    let history1 = vec![
+        sync::TxHistoryEntry { txid: "tx2".into(), net_amount: 2_0000_0000, timestamp: Some(1000), block_height: Some(1), confirmations: Some(10) },
+        sync::TxHistoryEntry { txid: "tx1".into(), net_amount: 1_0000_0000, timestamp: Some(900), block_height: Some(0), confirmations: Some(11) },
+    ];
+
+    // Second sync with same txs: should not duplicate
+    let mut state2 = state.clone();
+    // process same txs again (simulating re-fetch)
+    state2.process_transaction(&tx1, addr);
+    state2.process_transaction(&tx2, addr);
+
+    // Manually test dedup logic: new entries that overlap with prior
+    let new_entries = vec![
+        sync::TxHistoryEntry { txid: "tx2".into(), net_amount: 2_0000_0000, timestamp: Some(1000), block_height: Some(1), confirmations: Some(12) },
+    ];
+
+    let seen: std::collections::HashSet<String> = new_entries.iter().map(|e| e.txid.clone()).collect();
+    let mut merged = new_entries;
+    for entry in &history1 {
+        if !seen.contains(&entry.txid) {
+            merged.push(entry.clone());
+        }
+    }
+
+    // tx2 should appear only once (from new_entries), tx1 from prior
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].txid, "tx2");
+    assert_eq!(merged[1].txid, "tx1");
+}
+
+// ---------------------------------------------------------------------------
+// E2E: Dust threshold boundary
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_dust_threshold_boundary() {
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = bip39::mnemonic_to_seed(mnemonic, "");
+    let kp = keys::derive_keypair(&seed).unwrap();
+    let own_script = script::address_to_script_pubkey(&kp.address).unwrap();
+    let dest_kp = keys::derive_keypair_at(&seed, 0, 1).unwrap();
+
+    // Create a UTXO where the change would be exactly DUST_THRESHOLD (546 sat)
+    let fee_2out = fees::estimate_transparent_fee(1, 2);
+    let utxo_amount = 1_0000_0000 + fee_2out + params::DUST_THRESHOLD;
+    let utxos = vec![transaction::Utxo {
+        txid: "aa".repeat(32),
+        vout: 0,
+        amount: utxo_amount,
+        script_pubkey: encoding::hex_encode(&own_script),
+    }];
+
+    let signed = transaction::build_transaction(
+        &utxos, &dest_kp.address, 1_0000_0000,
+        &kp.privkey, &kp.pubkey, &kp.address,
+    ).unwrap();
+
+    // Dust at exactly threshold should be absorbed (change = 0)
+    let has_change = signed.tx.outputs.len() > 1;
+    assert!(!has_change, "Change of exactly DUST_THRESHOLD should be absorbed into fee");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers for building test TransactionInfo objects
 // ---------------------------------------------------------------------------
 

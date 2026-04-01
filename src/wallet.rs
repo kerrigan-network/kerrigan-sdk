@@ -137,9 +137,9 @@ impl WalletData {
         &self.seed
     }
 
-    /// Get the total balance in satoshis.
+    /// Get the total balance in satoshis (saturating — never wraps).
     pub fn balance(&self) -> u64 {
-        self.utxos.iter().map(|u| u.amount).sum()
+        self.utxos.iter().fold(0u64, |acc, u| acc.saturating_add(u.amount))
     }
 
     /// Get the balance formatted as KRGN string (e.g., "1.50000000").
@@ -176,7 +176,9 @@ fn device_key() -> Result<[u8; 32], WalletError> {
 }
 
 /// SHA256-CTR stream cipher. Symmetric — same function encrypts and decrypts.
+/// Keystream blocks are zeroized after use to minimize secret residue in memory.
 fn device_crypt(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    use zeroize::Zeroize;
     let mut result = Vec::with_capacity(data.len());
     let mut offset = 0;
     let mut counter = 0u64;
@@ -185,12 +187,13 @@ fn device_crypt(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(key);
         hasher.update(&counter.to_le_bytes());
-        let block: [u8; 32] = hasher.finalize().into();
+        let mut block: [u8; 32] = hasher.finalize().into();
 
         let chunk_len = (data.len() - offset).min(32);
         for i in 0..chunk_len {
             result.push(data[offset + i] ^ block[i]);
         }
+        block.zeroize();
         offset += chunk_len;
         counter += 1;
     }
@@ -387,23 +390,21 @@ pub fn sync_wallet_with_progress(
     let current_height = client.get_block_height()
         .map_err(|e| WalletError::Sync(e.to_string()))?;
 
-    if wallet.last_sync_height > 0
-        && current_height == wallet.last_sync_height
-        && wallet.sync_state.is_some()
-    {
-        // No new blocks — return cached state
-        let state = wallet.sync_state.as_ref().unwrap();
-        let utxos = state.derive_utxos();
-        let balance = utxos.iter().map(|u| u.amount).sum();
-        return Ok(sync::SyncResult {
-            utxos,
-            balance,
-            new_tx_count: 0,
-            processed_txids: state.processed_txids.clone(),
-            history: wallet.history.clone(),
-            state: state.clone(),
-            was_cached: true,
-        });
+    if wallet.last_sync_height > 0 && current_height == wallet.last_sync_height {
+        if let Some(state) = &wallet.sync_state {
+            // No new blocks — return cached state
+            let utxos = state.derive_utxos();
+            let balance = utxos.iter().fold(0u64, |a, u| a.saturating_add(u.amount));
+            return Ok(sync::SyncResult {
+                utxos,
+                balance,
+                new_tx_count: 0,
+                processed_txids: state.processed_txids.clone(),
+                history: wallet.history.clone(),
+                state: state.clone(),
+                was_cached: true,
+            });
+        }
     }
 
     // --- Incremental sync: pass persisted state ---
@@ -725,5 +726,60 @@ mod tests {
             params::DATA_DIR_NAME,
             dir
         );
+    }
+
+    // -- parse_krgn edge cases --
+
+    #[test]
+    fn parse_krgn_whitespace() {
+        assert_eq!(parse_krgn("  1.5  ").unwrap(), 150_000_000);
+        assert_eq!(parse_krgn("\t0.001\n").unwrap(), 100_000);
+    }
+
+    #[test]
+    fn parse_krgn_negative_rejected() {
+        assert!(parse_krgn("-1").is_err());
+        assert!(parse_krgn("-0.5").is_err());
+    }
+
+    #[test]
+    fn parse_krgn_large_value() {
+        // 21 million KRGN (Bitcoin-scale supply)
+        assert_eq!(parse_krgn("21000000").unwrap(), 2_100_000_000_000_000);
+    }
+
+    #[test]
+    fn parse_krgn_just_dot() {
+        assert!(parse_krgn(".").is_err());
+        assert!(parse_krgn(".5").is_err()); // no leading zero
+    }
+
+    #[test]
+    fn parse_krgn_trailing_dot() {
+        // "1." should parse as 1.00000000
+        assert_eq!(parse_krgn("1.").unwrap(), 100_000_000);
+    }
+
+    // -- balance saturation --
+
+    #[test]
+    fn balance_saturates() {
+        let mut wallet = wallet_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ).unwrap();
+        wallet.utxos = vec![
+            Utxo { txid: "a".into(), vout: 0, amount: u64::MAX, script_pubkey: "s".into() },
+            Utxo { txid: "b".into(), vout: 0, amount: 1, script_pubkey: "s".into() },
+        ];
+        assert_eq!(wallet.balance(), u64::MAX, "Balance should saturate, not wrap");
+    }
+
+    // -- format_krgn large values --
+
+    #[test]
+    fn format_krgn_u64_max() {
+        // Should not panic
+        let s = format_krgn(u64::MAX);
+        assert!(s.contains('.'));
     }
 }

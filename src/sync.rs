@@ -201,7 +201,7 @@ impl SyncState {
 
     /// Get the total confirmed balance in satoshis.
     pub fn balance(&self) -> u64 {
-        self.derive_utxos().iter().map(|u| u.amount).sum()
+        self.derive_utxos().iter().fold(0u64, |a, u| a.saturating_add(u.amount))
     }
 
     /// Number of transactions processed so far.
@@ -299,7 +299,7 @@ pub fn sync_incremental(
     if new_tx_count == 0 {
         if let Some(state) = prior_state {
             let utxos = state.derive_utxos();
-            let balance = utxos.iter().map(|u| u.amount).sum();
+            let balance = utxos.iter().fold(0u64, |a, u| a.saturating_add(u.amount));
             on_progress(0, 0);
             return Ok(SyncResult {
                 utxos,
@@ -355,7 +355,7 @@ pub fn sync_incremental(
     }
 
     let utxos = state.derive_utxos();
-    let balance = utxos.iter().map(|u| u.amount).sum();
+    let balance = utxos.iter().fold(0u64, |a, u| a.saturating_add(u.amount));
 
     // Merge history: new entries (newest first) prepended to prior, deduplicated
     new_history.reverse();

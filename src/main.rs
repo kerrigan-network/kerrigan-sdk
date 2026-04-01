@@ -77,9 +77,9 @@ fn print_version() {
 
 fn read_line(prompt: &str) -> String {
     print!("{prompt}");
-    io::stdout().flush().unwrap();
+    let _ = io::stdout().flush();
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+    let _ = io::stdin().read_line(&mut input);
     input.trim().to_string()
 }
 

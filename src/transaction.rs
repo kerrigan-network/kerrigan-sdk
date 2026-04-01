@@ -360,7 +360,7 @@ pub fn select_utxos(
         if total >= target_amount + fee {
             // Check if change is dust — if so, absorb it into the fee
             let change = total - target_amount - fee;
-            if change > 0 && change < params::DUST_THRESHOLD {
+            if change > 0 && change <= params::DUST_THRESHOLD {
                 // No change output: recalculate fee with only 1 output
                 let no_change = TxComponents::transparent(
                     selected.len(),
