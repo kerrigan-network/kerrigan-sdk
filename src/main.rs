@@ -7,7 +7,6 @@ use std::io::{self, Write};
 use std::process;
 
 use kerrigan_wallet::keys;
-use kerrigan_wallet::params;
 use kerrigan_wallet::sync::TxHistoryEntry;
 use kerrigan_wallet::term::{self, Spinner};
 use kerrigan_wallet::wallet::{self, WalletError};
@@ -245,7 +244,7 @@ fn cmd_balance() -> Result<(), WalletError> {
     let mut wallet_data = wallet::load_wallet()?;
 
     println!();
-    let sync_ok = sync_with_spinner(&mut wallet_data).is_ok();
+    let _ = sync_with_spinner(&mut wallet_data);
 
     println!();
     println!("  {} {}",
