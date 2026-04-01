@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn hex_decode_basic() {
-        assert_eq!(hex_decode("").unwrap(), vec![]);
+        assert_eq!(hex_decode("").unwrap(), Vec::<u8>::new());
         assert_eq!(hex_decode("00").unwrap(), vec![0x00]);
         assert_eq!(hex_decode("ff").unwrap(), vec![0xff]);
         assert_eq!(hex_decode("deadbeef").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
