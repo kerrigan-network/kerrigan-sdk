@@ -190,6 +190,21 @@ impl SyncState {
 // High-level sync orchestrator
 // ---------------------------------------------------------------------------
 
+/// A summary of a single transaction for history display.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TxHistoryEntry {
+    /// Transaction ID.
+    pub txid: String,
+    /// Net change to our balance in satoshis (positive = received, negative = sent).
+    pub net_amount: i64,
+    /// Timestamp (unix epoch seconds), if available.
+    pub timestamp: Option<u64>,
+    /// Block height, if confirmed.
+    pub block_height: Option<u64>,
+    /// Number of confirmations at sync time.
+    pub confirmations: Option<u64>,
+}
+
 /// Result of a sync operation.
 #[derive(Debug)]
 pub struct SyncResult {
@@ -201,6 +216,8 @@ pub struct SyncResult {
     pub new_tx_count: usize,
     /// Complete set of processed txids (for persisting in the wallet file).
     pub processed_txids: HashSet<String>,
+    /// Transaction history entries (newest first).
+    pub history: Vec<TxHistoryEntry>,
 }
 
 /// Perform a full or incremental sync for the given address.
@@ -217,6 +234,16 @@ pub fn sync_address(
     address: &str,
     known_txids: &HashSet<String>,
 ) -> Result<SyncResult, SyncError> {
+    sync_address_with_progress(client, address, known_txids, |_, _| {})
+}
+
+/// Like [`sync_address`], but calls `on_progress(completed, total)` after each tx fetch.
+pub fn sync_address_with_progress(
+    client: &ExplorerClient,
+    address: &str,
+    known_txids: &HashSet<String>,
+    on_progress: impl Fn(usize, usize),
+) -> Result<SyncResult, SyncError> {
     // 1. Get all txids for this address
     let all_txids = client.get_address_txids(address)?;
 
@@ -226,33 +253,60 @@ pub fn sync_address(
         .collect();
 
     let new_tx_count = new_txids.len();
+    let total = all_txids.len();
 
-    // 3. Fetch each new transaction
-    //    We also need to re-process ALL txids to rebuild the UTXO set
-    //    (spent outpoints from old txs are needed to filter new outputs).
-    //    On incremental sync, we fetch only new txs but replay old state.
+    // 3. Fetch and process ALL txids to rebuild UTXO state.
     let mut state = SyncState::new();
+    let mut history = Vec::new();
 
-    // Process ALL txids in order (oldest first — Insight returns newest first)
-    for txid in all_txids.iter().rev() {
-        if known_txids.contains(txid) {
-            // Already processed — we still need to fetch to rebuild UTXO state
-            // unless we persisted the full SyncState. For now, re-fetch.
-            // TODO: persist SyncState for true incremental sync.
-        }
-
+    // Process oldest first (Insight returns newest first)
+    for (i, txid) in all_txids.iter().rev().enumerate() {
         let tx = client.get_transaction(txid)?;
+
+        // Compute net amount for history: sum(outputs to us) - sum(inputs from us)
+        let received: i64 = tx.vout.iter()
+            .filter(|v| {
+                v.script_pub_key.as_ref()
+                    .and_then(|spk| spk.addresses.as_ref())
+                    .map(|addrs| addrs.iter().any(|a| a == address))
+                    .unwrap_or(false)
+            })
+            .map(|v| v.value_satoshis() as i64)
+            .sum();
+
+        let spent: i64 = tx.vin.iter()
+            .filter(|v| v.coinbase.is_none() && v.addr.as_deref() == Some(address))
+            .map(|v| v.value_sat.map(|s| s as i64)
+                .or_else(|| v.value.map(|f| (f * crate::params::COIN as f64) as i64))
+                .unwrap_or(0))
+            .sum();
+
+        let net = received - spent;
+
+        history.push(TxHistoryEntry {
+            txid: tx.txid.clone(),
+            net_amount: net,
+            timestamp: tx.time,
+            block_height: tx.blockheight,
+            confirmations: tx.confirmations,
+        });
+
         state.process_transaction(&tx, address);
+        on_progress(i + 1, total);
     }
 
     let utxos = state.derive_utxos();
     let balance = utxos.iter().map(|u| u.amount).sum();
+
+    // History: newest first
+    history.reverse();
 
     Ok(SyncResult {
         utxos,
         balance,
         new_tx_count,
         processed_txids: state.processed_txids,
+        history,
     })
 }
 

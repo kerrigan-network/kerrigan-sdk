@@ -1,26 +1,15 @@
 /// Kerrigan Network light wallet CLI.
 ///
-/// A minimal, transparent-only wallet for the Kerrigan Network (KRGN).
-/// All key derivation (BIP39, BIP32) is implemented from scratch with
-/// zero external BIP crates.
-///
-/// # Commands
-///
-/// ```text
-/// kerrigan-wallet create            Generate new wallet, display 24-word mnemonic
-/// kerrigan-wallet import            Import wallet from mnemonic (interactive stdin)
-/// kerrigan-wallet export            Display mnemonic (requires confirmation)
-/// kerrigan-wallet address           Show receiving address
-/// kerrigan-wallet balance           Sync UTXOs and show balance
-/// kerrigan-wallet send <addr> <amt> Send KRGN (shows fee, requires confirmation)
-/// kerrigan-wallet history           Show transaction history (synced txids)
-/// kerrigan-wallet sync              Force full UTXO resync
-/// ```
+/// "My stare alone would reduce you to ashes."
+///   — Sarah Kerrigan, Queen of Blades
 
 use std::io::{self, Write};
 use std::process;
 
 use kerrigan_wallet::keys;
+use kerrigan_wallet::params;
+use kerrigan_wallet::sync::TxHistoryEntry;
+use kerrigan_wallet::term::{self, Spinner};
 use kerrigan_wallet::wallet::{self, WalletError};
 
 fn main() {
@@ -38,19 +27,20 @@ fn main() {
         "address" => cmd_address(),
         "balance" => cmd_balance(),
         "send" => cmd_send(&args[2..]),
-        "history" => cmd_history(),
+        "history" => cmd_history(&args[2..]),
         "sync" => cmd_sync(),
         "help" | "--help" | "-h" => { print_usage(); Ok(()) }
         "version" | "--version" | "-V" => { print_version(); Ok(()) }
         other => {
-            eprintln!("Unknown command: {other}");
+            eprintln!("{}", term::red(&format!("Unknown command: {other}")));
+            println!();
             print_usage();
             process::exit(1);
         }
     };
 
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        eprintln!("{} {e}", term::red_bold("Error:"));
         process::exit(1);
     }
 }
@@ -60,31 +50,32 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn print_usage() {
-    println!("kerrigan-wallet v{}", env!("CARGO_PKG_VERSION"));
+    println!("{}", term::purple_bold("kerrigan-wallet"));
+    println!("{}", term::dim(&format!("v{} — Kerrigan Network light wallet", env!("CARGO_PKG_VERSION"))));
     println!();
-    println!("Usage: kerrigan-wallet <command> [args]");
+    println!("{}", term::bold("Usage:"));
+    println!("  kerrigan-wallet {}", term::dim("<command> [args]"));
     println!();
-    println!("Commands:");
-    println!("  create            Generate a new wallet");
-    println!("  import            Import wallet from mnemonic");
-    println!("  export            Display wallet mnemonic");
-    println!("  address           Show receiving address");
-    println!("  balance           Sync and show balance");
-    println!("  send <addr> <amt> Send KRGN to an address");
-    println!("  history           Show synced transaction count");
-    println!("  sync              Force full UTXO resync");
-    println!("  version           Show version");
+    println!("{}", term::bold("Commands:"));
+    println!("  {}            Generate a new wallet", term::purple("create"));
+    println!("  {}            Import wallet from mnemonic", term::purple("import"));
+    println!("  {}            Display wallet mnemonic", term::purple("export"));
+    println!("  {}           Show receiving address", term::purple("address"));
+    println!("  {}           Sync and show balance", term::purple("balance"));
+    println!("  {} {} {} Send KRGN to an address", term::purple("send"), term::dim("<addr>"), term::dim("<amt>"));
+    println!("  {} {}  Transaction history", term::purple("history"), term::dim("[page|all]"));
+    println!("  {}              Force full resync", term::purple("sync"));
+    println!("  {}           Show version", term::purple("version"));
 }
 
 fn print_version() {
-    println!("kerrigan-wallet v{}", env!("CARGO_PKG_VERSION"));
+    println!("{} v{}", term::purple_bold("kerrigan-wallet"), env!("CARGO_PKG_VERSION"));
 }
 
 // ---------------------------------------------------------------------------
 // Interactive I/O helpers
 // ---------------------------------------------------------------------------
 
-/// Read a line from stdin, trimmed.
 fn read_line(prompt: &str) -> String {
     print!("{prompt}");
     io::stdout().flush().unwrap();
@@ -93,10 +84,44 @@ fn read_line(prompt: &str) -> String {
     input.trim().to_string()
 }
 
-/// Ask for confirmation. Returns true if user types the expected string.
 fn confirm(prompt: &str, expected: &str) -> bool {
     let input = read_line(prompt);
     input == expected
+}
+
+/// Run a sync with a spinner, save the wallet, and return the result.
+fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wallet::sync::SyncResult, WalletError> {
+    let spinner = Spinner::start("Syncing");
+
+    // We need to move the spinner into the closure, but the closure is called
+    // from sync_wallet_with_progress. Use a shared reference via Arc.
+    let spinner_ref = std::sync::Arc::new(spinner);
+    let spinner_for_closure = spinner_ref.clone();
+
+    let result = wallet::sync_wallet_with_progress(wallet_data, move |done, total| {
+        if total > 0 {
+            spinner_for_closure.set_progress(done as f64 / total as f64, None);
+        }
+    });
+
+    // Unwrap the Arc to get the spinner back
+    let spinner = std::sync::Arc::try_unwrap(spinner_ref).ok();
+
+    match &result {
+        Ok(r) => {
+            if let Some(s) = spinner {
+                s.finish_with(&format!("Synced {} transactions", r.processed_txids.len()));
+            }
+            wallet::save_wallet(wallet_data)?;
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                s.finish_err(&format!("Sync failed: {e}"));
+            }
+        }
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -106,25 +131,34 @@ fn confirm(prompt: &str, expected: &str) -> bool {
 fn cmd_create() -> Result<(), WalletError> {
     let wallet_data = wallet::create_wallet()?;
 
-    println!("Wallet created successfully!");
     println!();
-    println!("Your 24-word recovery phrase:");
+    println!("  {}", term::purple_bold("⚡ Welcome to the Swarm. ⚡"));
+    println!();
+    println!("  {}", term::dim("Your 24-word recovery phrase:"));
     println!();
 
-    // Display words in a numbered grid
     let words: Vec<&str> = wallet_data.mnemonic().split_whitespace().collect();
     for (i, word) in words.iter().enumerate() {
-        print!("  {:>2}. {:<12}", i + 1, word);
-        if (i + 1) % 4 == 0 {
-            println!();
-        }
+        print!("   {}{:<12}",
+            term::dim(&format!("{:>2}. ", i + 1)),
+            term::bold(word),
+        );
+        if (i + 1) % 4 == 0 { println!(); }
     }
-    println!();
 
-    println!("IMPORTANT: Write down these words and store them safely.");
-    println!("They are the ONLY way to recover your wallet.");
     println!();
-    println!("Receiving address: {}", wallet_data.address);
+    println!("  {} Write these down. They are the {} way to recover your wallet.",
+        term::yellow("⚠"),
+        term::bold("ONLY"),
+    );
+    println!();
+    term::divider(50);
+    println!();
+    println!("  {} {}",
+        term::dim("Address:"),
+        term::purple_bold(&wallet_data.address),
+    );
+    println!();
 
     Ok(())
 }
@@ -134,8 +168,9 @@ fn cmd_import() -> Result<(), WalletError> {
         return Err(WalletError::AlreadyExists);
     }
 
-    println!("Enter your 24-word recovery phrase:");
-    let mnemonic = read_line("> ");
+    println!();
+    println!("  {}", term::bold("Enter your 24-word recovery phrase:"));
+    let mnemonic = read_line(&format!("  {} ", term::purple(">")));
 
     if mnemonic.is_empty() {
         return Err(WalletError::InvalidMnemonic("empty input".into()));
@@ -144,10 +179,14 @@ fn cmd_import() -> Result<(), WalletError> {
     let wallet_data = wallet::import_wallet(&mnemonic)?;
 
     println!();
-    println!("Wallet imported successfully!");
-    println!("Address: {}", wallet_data.address);
+    println!("  {} Wallet imported.", term::green("✓"));
+    println!("  {} {}", term::dim("Address:"), term::purple_bold(&wallet_data.address));
     println!();
-    println!("Run 'kerrigan-wallet sync' to scan for existing transactions.");
+    println!("  {} Run {} to scan for existing transactions.",
+        term::dim("Tip:"),
+        term::purple("kerrigan-wallet sync"),
+    );
+    println!();
 
     Ok(())
 }
@@ -155,22 +194,27 @@ fn cmd_import() -> Result<(), WalletError> {
 fn cmd_export() -> Result<(), WalletError> {
     let wallet_data = wallet::load_wallet()?;
 
-    println!("WARNING: Your recovery phrase gives FULL access to your funds.");
-    println!("Never share it with anyone.");
+    println!();
+    println!("  {} Your recovery phrase grants {} access to your funds.",
+        term::yellow("⚠"),
+        term::red_bold("FULL"),
+    );
+    println!("  {}", term::dim("Never share it with anyone."));
     println!();
 
-    if !confirm("Type 'I understand' to continue: ", "I understand") {
-        println!("Cancelled.");
+    if !confirm(&format!("  Type '{}' to continue: ", term::bold("I understand")), "I understand") {
+        println!("  {}", term::dim("Cancelled."));
         return Ok(());
     }
 
     println!();
     let words: Vec<&str> = wallet_data.mnemonic().split_whitespace().collect();
     for (i, word) in words.iter().enumerate() {
-        print!("  {:>2}. {:<12}", i + 1, word);
-        if (i + 1) % 4 == 0 {
-            println!();
-        }
+        print!("   {}{:<12}",
+            term::dim(&format!("{:>2}. ", i + 1)),
+            term::bold(word),
+        );
+        if (i + 1) % 4 == 0 { println!(); }
     }
     println!();
 
@@ -179,50 +223,57 @@ fn cmd_export() -> Result<(), WalletError> {
 
 fn cmd_address() -> Result<(), WalletError> {
     let wallet_data = wallet::load_wallet()?;
-    println!("{}", wallet_data.address);
+    println!("{}", term::purple_bold(&wallet_data.address));
     Ok(())
 }
 
 fn cmd_balance() -> Result<(), WalletError> {
     let mut wallet_data = wallet::load_wallet()?;
 
-    eprint!("Syncing...");
-    match wallet::sync_wallet(&mut wallet_data) {
-        Ok(result) => {
-            wallet::save_wallet(&wallet_data)?;
-            eprintln!(" done ({} txs processed).", result.processed_txids.len());
-        }
-        Err(e) => {
-            eprintln!(" sync failed: {e}");
-            eprintln!("Showing cached balance.");
-        }
-    }
+    println!();
+    let sync_ok = sync_with_spinner(&mut wallet_data).is_ok();
 
     println!();
-    println!("Balance: {} KRGN", wallet_data.balance_display());
+    println!("  {} {}",
+        term::dim("Balance:"),
+        term::green_bold(&format!("{} KRGN", wallet_data.balance_display())),
+    );
 
     if wallet_data.utxos.len() > 1 {
-        println!("  ({} UTXOs)", wallet_data.utxos.len());
+        println!("  {} {} UTXOs",
+            term::dim("Coins: "),
+            wallet_data.utxos.len(),
+        );
     }
+    println!();
 
     Ok(())
 }
 
 fn cmd_send(args: &[String]) -> Result<(), WalletError> {
     if args.len() < 2 {
-        eprintln!("Usage: kerrigan-wallet send <address> <amount>");
-        eprintln!("  amount: in KRGN (e.g., 1.5 or 0.001)");
+        println!();
+        println!("  {} kerrigan-wallet {} {} {}",
+            term::bold("Usage:"),
+            term::purple("send"),
+            term::dim("<address>"),
+            term::dim("<amount>"),
+        );
+        println!("  {} amount in KRGN (e.g., {} or {})",
+            term::dim("       "),
+            term::bold("1.5"),
+            term::bold("0.001"),
+        );
+        println!();
         return Ok(());
     }
 
     let to_address = &args[0];
     let amount_str = &args[1];
 
-    // Validate destination address
     keys::validate_address(to_address)
         .map_err(|e| WalletError::Transaction(format!("invalid address: {e}")))?;
 
-    // Parse amount
     let amount = wallet::parse_krgn(amount_str)?;
     if amount == 0 {
         return Err(WalletError::Transaction("amount must be > 0".into()));
@@ -230,73 +281,156 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
 
     let mut wallet_data = wallet::load_wallet()?;
 
-    // Sync first to get latest UTXOs
-    eprint!("Syncing...");
-    match wallet::sync_wallet(&mut wallet_data) {
-        Ok(_) => {
-            wallet::save_wallet(&wallet_data)?;
-            eprintln!(" done.");
-        }
-        Err(e) => {
-            eprintln!(" sync failed: {e}");
-            eprintln!("Proceeding with cached UTXOs.");
-        }
-    }
+    println!();
+    let _ = sync_with_spinner(&mut wallet_data);
 
-    // Build the transaction
     let signed = wallet::prepare_send(&wallet_data, to_address, amount)?;
 
-    // Show details and confirm
     println!();
-    println!("Transaction details:");
-    println!("  To:     {to_address}");
-    println!("  Amount: {} KRGN", wallet::format_krgn(amount));
-    println!("  Fee:    {} KRGN", wallet::format_krgn(signed.fee));
-    println!("  Total:  {} KRGN", wallet::format_krgn(amount + signed.fee));
+    term::header("Transaction");
+    println!();
+    println!("   {}  {}", term::dim("To:"), term::bold(to_address));
+    println!("   {}  {} KRGN", term::dim("Amount:"), term::green_bold(&wallet::format_krgn(amount)));
+    println!("   {}  {} KRGN", term::dim("Fee:"), term::yellow(&wallet::format_krgn(signed.fee)));
+    println!("   {}  {} KRGN",
+        term::dim("Total:"),
+        term::bold(&wallet::format_krgn(amount + signed.fee)),
+    );
     println!();
 
     let remaining = wallet_data.balance().saturating_sub(amount + signed.fee);
-    println!("  Remaining balance: {} KRGN", wallet::format_krgn(remaining));
+    println!("   {}  {} KRGN",
+        term::dim("Remaining:"),
+        wallet::format_krgn(remaining),
+    );
     println!();
 
-    if !confirm("Confirm send? (yes/no): ", "yes") {
-        println!("Cancelled.");
+    if !confirm(&format!("  Confirm send? ({}/no): ", term::green("yes")), "yes") {
+        println!("  {}", term::dim("Cancelled."));
         return Ok(());
     }
 
-    // Broadcast
-    eprint!("Broadcasting...");
-    let txid = wallet::broadcast_and_finalize(&mut wallet_data, &signed)?;
-    eprintln!(" done.");
-
-    println!();
-    println!("Transaction sent!");
-    println!("  TXID: {txid}");
+    let spinner = Spinner::start("Broadcasting");
+    let txid = wallet::broadcast_and_finalize(&mut wallet_data, &signed);
+    match txid {
+        Ok(txid) => {
+            spinner.finish_with("Transaction sent!");
+            println!();
+            println!("  {} {}", term::dim("TXID:"), term::purple(&txid));
+            println!();
+        }
+        Err(e) => {
+            spinner.finish_err(&format!("Broadcast failed: {e}"));
+            return Err(e);
+        }
+    }
 
     Ok(())
 }
 
-fn cmd_history() -> Result<(), WalletError> {
-    let wallet_data = wallet::load_wallet()?;
+fn cmd_history(args: &[String]) -> Result<(), WalletError> {
+    let mut wallet_data = wallet::load_wallet()?;
 
-    println!("Address: {}", wallet_data.address);
-    println!("Transactions: {}", wallet_data.processed_txids.len());
-    println!("UTXOs: {}", wallet_data.utxos.len());
-    println!("Balance: {} KRGN", wallet_data.balance_display());
+    println!();
 
-    if wallet_data.last_sync_height > 0 {
-        println!("Last sync height: {}", wallet_data.last_sync_height);
+    // Sync if no history cached
+    if wallet_data.history.is_empty() {
+        let _ = sync_with_spinner(&mut wallet_data);
     }
 
-    if !wallet_data.utxos.is_empty() {
+    let history = &wallet_data.history;
+    if history.is_empty() {
+        println!("  {}", term::dim("No transactions yet."));
         println!();
-        println!("Unspent outputs:");
-        for utxo in &wallet_data.utxos {
-            println!("  {}:{} — {} KRGN",
-                &utxo.txid[..16], utxo.vout,
-                wallet::format_krgn(utxo.amount)
-            );
-        }
+        return Ok(());
+    }
+
+    // Parse pagination: "all", a page number, or default (page 1)
+    let page_size = 10usize;
+    let (entries, page_info): (&[TxHistoryEntry], String) = if args.first().map(|s| s.as_str()) == Some("all") {
+        (history, format!("all {} transactions", history.len()))
+    } else {
+        let page: usize = args.first()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1)
+            .max(1);
+        let total_pages = (history.len() + page_size - 1) / page_size;
+        let page = page.min(total_pages);
+        let start = (page - 1) * page_size;
+        let end = (start + page_size).min(history.len());
+        (&history[start..end], format!("page {page}/{total_pages}"))
+    };
+
+    println!("  {} {} {}",
+        term::purple_bold("▸"),
+        term::bold("Transaction History"),
+        term::dim(&format!("({})", page_info)),
+    );
+    println!();
+
+    // Header
+    println!("  {}  {}  {}  {}",
+        term::dim(&format!("{:<16}", "TXID")),
+        term::dim(&format!("{:>15}", "Amount")),
+        term::dim(&format!("{:>8}", "Confs")),
+        term::dim("Date"),
+    );
+    term::divider(60);
+
+    for entry in entries {
+        let txid_short = if entry.txid.len() >= 16 {
+            &entry.txid[..16]
+        } else {
+            &entry.txid
+        };
+
+        let amount_str = if entry.net_amount >= 0 {
+            term::green(&format!("+{}", wallet::format_krgn(entry.net_amount as u64)))
+        } else {
+            term::red(&format!("-{}", wallet::format_krgn((-entry.net_amount) as u64)))
+        };
+
+        let confs = entry.confirmations
+            .map(|c| format!("{c}"))
+            .unwrap_or_else(|| "pending".into());
+
+        let date = entry.timestamp
+            .map(|ts| format_timestamp(ts))
+            .unwrap_or_else(|| term::dim("—"));
+
+        println!("  {}  {:>15}  {:>8}  {}",
+            term::purple(txid_short),
+            amount_str,
+            term::dim(&confs),
+            date,
+        );
+    }
+
+    term::divider(60);
+    println!("  {} {} KRGN  {} {} UTXOs",
+        term::dim("Balance:"),
+        term::green_bold(&wallet_data.balance_display()),
+        term::dim("│"),
+        wallet_data.utxos.len(),
+    );
+
+    if wallet_data.last_sync_height > 0 {
+        println!("  {} block {}",
+            term::dim("Synced: "),
+            wallet_data.last_sync_height,
+        );
+    }
+    println!();
+
+    // Pagination hint
+    let total_pages = (history.len() + page_size - 1) / page_size;
+    if total_pages > 1 && args.first().map(|s| s.as_str()) != Some("all") {
+        println!("  {} {} or {}",
+            term::dim("Tip:"),
+            term::purple("history <page>"),
+            term::purple("history all"),
+        );
+        println!();
     }
 
     Ok(())
@@ -305,19 +439,70 @@ fn cmd_history() -> Result<(), WalletError> {
 fn cmd_sync() -> Result<(), WalletError> {
     let mut wallet_data = wallet::load_wallet()?;
 
-    // Force full resync by clearing processed txids
+    // Force full resync
     wallet_data.processed_txids.clear();
     wallet_data.utxos.clear();
-
-    eprint!("Syncing from scratch...");
-    let result = wallet::sync_wallet(&mut wallet_data)?;
-    wallet::save_wallet(&wallet_data)?;
-    eprintln!(" done.");
+    wallet_data.history.clear();
 
     println!();
-    println!("Synced {} transactions.", result.processed_txids.len());
-    println!("Balance: {} KRGN", wallet_data.balance_display());
-    println!("UTXOs: {}", wallet_data.utxos.len());
+    let result = sync_with_spinner(&mut wallet_data)?;
+
+    println!();
+    println!("  {} {} KRGN  {} {} UTXOs  {} {} txs",
+        term::dim("Balance:"),
+        term::green_bold(&wallet_data.balance_display()),
+        term::dim("│"),
+        wallet_data.utxos.len(),
+        term::dim("│"),
+        result.processed_txids.len(),
+    );
+    println!();
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Format a unix timestamp into a human-readable date.
+fn format_timestamp(ts: u64) -> String {
+    // Simple formatting without chrono: days since epoch → date
+    let secs_per_day: u64 = 86400;
+    let days = ts / secs_per_day;
+
+    // Days since 1970-01-01 → year/month/day (simplified Gregorian)
+    let mut y = 1970u64;
+    let mut remaining = days;
+
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+
+    let months_days: [u64; 12] = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut m = 0;
+    for (i, &md) in months_days.iter().enumerate() {
+        if remaining < md {
+            m = i + 1;
+            break;
+        }
+        remaining -= md;
+    }
+    let d = remaining + 1;
+
+    format!("{y}-{m:02}-{d:02}")
+}
+
+fn is_leap(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }

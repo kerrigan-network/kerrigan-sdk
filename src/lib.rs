@@ -9,3 +9,4 @@ pub mod transaction;
 pub mod network;
 pub mod sync;
 pub mod wallet;
+pub mod term;

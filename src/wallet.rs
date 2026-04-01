@@ -96,6 +96,10 @@ pub struct WalletData {
     /// Transaction IDs already processed by sync (for incremental sync).
     pub processed_txids: HashSet<String>,
 
+    /// Transaction history entries (newest first).
+    #[serde(default)]
+    pub history: Vec<sync::TxHistoryEntry>,
+
     /// Last known block height at sync time.
     pub last_sync_height: u64,
 }
@@ -202,6 +206,7 @@ fn encrypt_for_disk(data: &WalletData) -> Result<WalletData, WalletError> {
         address: data.address.clone(),
         utxos: data.utxos.clone(),
         processed_txids: data.processed_txids.clone(),
+        history: data.history.clone(),
         last_sync_height: data.last_sync_height,
     })
 }
@@ -298,6 +303,7 @@ fn wallet_from_mnemonic(mnemonic: &str) -> Result<WalletData, WalletError> {
         address: kp.address,
         utxos: Vec::new(),
         processed_txids: HashSet::new(),
+        history: Vec::new(),
         last_sync_height: 0,
     })
 }
@@ -355,13 +361,23 @@ pub fn load_wallet() -> Result<WalletData, WalletError> {
 
 /// Sync the wallet's UTXO set from the explorer.
 pub fn sync_wallet(wallet: &mut WalletData) -> Result<sync::SyncResult, WalletError> {
+    sync_wallet_with_progress(wallet, |_, _| {})
+}
+
+/// Sync with a progress callback: `on_progress(completed, total)`.
+pub fn sync_wallet_with_progress(
+    wallet: &mut WalletData,
+    on_progress: impl Fn(usize, usize),
+) -> Result<sync::SyncResult, WalletError> {
     let client = ExplorerClient::new();
 
-    let result = sync::sync_address(&client, &wallet.address, &wallet.processed_txids)
-        .map_err(|e| WalletError::Sync(e.to_string()))?;
+    let result = sync::sync_address_with_progress(
+        &client, &wallet.address, &wallet.processed_txids, on_progress,
+    ).map_err(|e| WalletError::Sync(e.to_string()))?;
 
     wallet.utxos = result.utxos.clone();
     wallet.processed_txids = result.processed_txids.clone();
+    wallet.history = result.history.clone();
 
     if let Ok(height) = client.get_block_height() {
         wallet.last_sync_height = height;
