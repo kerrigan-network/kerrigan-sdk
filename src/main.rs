@@ -368,6 +368,13 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
         (&history[start..end], format!("page {page}/{total_pages}"))
     };
 
+    // Decide txid display width based on terminal width
+    // Full txid (64 chars) needs ~108 cols total: 2 + 64 + 2 + 15 + 2 + 8 + 2 + 10 + padding
+    let term_width = term::terminal_width();
+    let full_txid = term_width >= 108;
+    let txid_width = if full_txid { 64 } else { 16 };
+    let divider_width = if full_txid { 108 } else { 60 };
+
     println!("  {} {} {}",
         term::purple_bold("▸"),
         term::bold("Transaction History"),
@@ -377,15 +384,17 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
 
     // Header
     println!("  {}  {}  {}  {}",
-        term::dim(&format!("{:<16}", "TXID")),
+        term::dim(&format!("{:<txid_width$}", "TXID")),
         term::dim(&format!("{:>15}", "Amount")),
         term::dim(&format!("{:>8}", "Confs")),
         term::dim("Date"),
     );
-    term::divider(60);
+    term::divider(divider_width);
 
     for entry in entries {
-        let txid_short = if entry.txid.len() >= 16 {
+        let txid_display = if full_txid {
+            &entry.txid
+        } else if entry.txid.len() >= 16 {
             &entry.txid[..16]
         } else {
             &entry.txid
@@ -405,15 +414,15 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
             .map(|ts| format_timestamp(ts))
             .unwrap_or_else(|| term::dim("—"));
 
-        println!("  {}  {:>15}  {:>8}  {}",
-            term::purple(txid_short),
+        println!("  {:<txid_width$}  {:>15}  {:>8}  {}",
+            term::purple(txid_display),
             amount_str,
             term::dim(&confs),
             date,
         );
     }
 
-    term::divider(60);
+    term::divider(divider_width);
     println!("  {} {} KRGN  {} {} UTXOs",
         term::dim("Balance:"),
         term::green_bold(&wallet_data.balance_display()),
