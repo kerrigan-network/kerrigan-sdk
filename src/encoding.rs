@@ -115,9 +115,7 @@ pub fn base58_encode(payload: &[u8]) -> String {
     }
 
     // Add '1' for each leading zero byte
-    for _ in 0..leading_zeros {
-        encoded.push(b'1');
-    }
+    encoded.resize(encoded.len() + leading_zeros, b'1');
 
     encoded.reverse();
     String::from_utf8(encoded).expect("Base58 alphabet is ASCII")
@@ -253,7 +251,7 @@ pub fn read_varint(data: &[u8], offset: &mut usize) -> Result<u64, EncodingError
                 data[*offset + 6], data[*offset + 7],
             ]);
             *offset += 8;
-            Ok(val as u64)
+            Ok(val)
         }
     }
 }

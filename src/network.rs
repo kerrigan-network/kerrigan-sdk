@@ -215,6 +215,10 @@ pub struct ExplorerClient {
     agent: ureq::Agent,
 }
 
+impl Default for ExplorerClient {
+    fn default() -> Self { Self::new() }
+}
+
 impl ExplorerClient {
     /// Create a client using the default explorer URL from [`params::EXPLORER_URL`].
     pub fn new() -> Self {

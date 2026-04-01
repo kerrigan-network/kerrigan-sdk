@@ -25,11 +25,10 @@ use crate::script::ScriptType;
 /// Fixed per-transaction overhead: version(4) + locktime(4) + input/output count varints(~2).
 pub const TX_OVERHEAD_BYTES: usize = 10;
 
-/// Size of one transparent P2PKH input (worst-case with 72-byte DER signature):
-/// - Previous outpoint: 32 (txid) + 4 (vout) = 36
-/// - scriptSig: 1 (varint) + 1 (sig push) + 73 (DER sig + sighash) + 1 (pubkey push) + 33 (pubkey) = 109
-/// - Sequence: 4
-/// Total: 148 (with 1 byte for the scriptSig varint ≤ 252 → fits in 1 byte).
+/// Size of one transparent P2PKH input (worst-case with 72-byte DER signature).
+///
+/// Breakdown: outpoint(36) + scriptSig varint(1) + scriptSig(109) + sequence(4) = 148 (conservative; see comment below).
+// scriptSig detail: 1 (sig push) + 73 (DER sig + sighash) + 1 (pubkey push) + 33 (pubkey) = 108, plus 1-byte varint = 109.
 pub const P2PKH_INPUT_BYTES: usize = 148;
 
 /// Size of one transparent output (P2PKH):
