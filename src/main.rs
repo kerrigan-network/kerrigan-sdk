@@ -117,7 +117,14 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wa
     match &result {
         Ok(r) => {
             if let Some(s) = spinner {
-                s.finish_with(&format!("Synced {} transactions", r.processed_txids.len()));
+                if r.was_cached {
+                    s.finish_with("Up to date");
+                } else if r.new_tx_count == 0 {
+                    s.finish_with("No new transactions");
+                } else {
+                    s.finish_with(&format!("Synced {} new transaction{}", r.new_tx_count,
+                        if r.new_tx_count == 1 { "" } else { "s" }));
+                }
             }
             wallet::save_wallet(wallet_data)?;
         }
@@ -382,42 +389,51 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
     );
     println!();
 
-    // Header
+    // Header (pad BEFORE coloring to avoid ANSI alignment issues)
     println!("  {}  {}  {}  {}",
         term::dim(&format!("{:<txid_width$}", "TXID")),
-        term::dim(&format!("{:>15}", "Amount")),
-        term::dim(&format!("{:>8}", "Confs")),
+        term::dim(&format!("{:>12}", "Amount")),
+        term::dim(&format!("{:>7}", "Confs")),
         term::dim("Date"),
     );
     term::divider(divider_width);
 
     for entry in entries {
         let txid_display = if full_txid {
-            &entry.txid
+            entry.txid.clone()
         } else if entry.txid.len() >= 16 {
-            &entry.txid[..16]
+            entry.txid[..16].to_string()
         } else {
-            &entry.txid
+            entry.txid.clone()
         };
 
-        let amount_str = if entry.net_amount >= 0 {
-            term::green(&format!("+{}", wallet::format_krgn(entry.net_amount as u64)))
+        // Format amount with fixed width BEFORE applying color
+        // (ANSI codes break Rust's {:>width} padding)
+        let amount_raw = if entry.net_amount >= 0 {
+            format!("+{}", wallet::format_krgn(entry.net_amount as u64))
         } else {
-            term::red(&format!("-{}", wallet::format_krgn((-entry.net_amount) as u64)))
+            format!("-{}", wallet::format_krgn((-entry.net_amount) as u64))
+        };
+        let amount_padded = format!("{:>12}", amount_raw);
+        let amount_str = if entry.net_amount >= 0 {
+            term::green(&amount_padded)
+        } else {
+            term::red(&amount_padded)
         };
 
         let confs = entry.confirmations
             .map(|c| format!("{c}"))
             .unwrap_or_else(|| "pending".into());
+        let confs_padded = format!("{:>7}", confs);
 
         let date = entry.timestamp
             .map(|ts| format_timestamp(ts))
-            .unwrap_or_else(|| term::dim("—"));
+            .unwrap_or_else(|| "—".into());
 
-        println!("  {:<txid_width$}  {:>15}  {:>8}  {}",
-            term::purple(txid_display),
+        println!("  {}  {}  {}  {}",
+            term::purple(&format!("{:<txid_width$}", txid_display)),
             amount_str,
-            term::dim(&confs),
+            term::dim(&confs_padded),
             date,
         );
     }
@@ -455,10 +471,12 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
 fn cmd_sync() -> Result<(), WalletError> {
     let mut wallet_data = wallet::load_wallet()?;
 
-    // Force full resync
+    // Force full resync — clear all cached state
     wallet_data.processed_txids.clear();
     wallet_data.utxos.clear();
     wallet_data.history.clear();
+    wallet_data.sync_state = None;
+    wallet_data.last_sync_height = 0;
 
     println!();
     let result = sync_with_spinner(&mut wallet_data)?;

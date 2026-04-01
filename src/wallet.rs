@@ -96,6 +96,11 @@ pub struct WalletData {
     /// Transaction IDs already processed by sync (for incremental sync).
     pub processed_txids: HashSet<String>,
 
+    /// Persisted sync state (potential UTXOs + spent outpoints).
+    /// Enables true incremental sync — only new txids are fetched.
+    #[serde(default)]
+    pub sync_state: Option<sync::SyncState>,
+
     /// Transaction history entries (newest first).
     #[serde(default)]
     pub history: Vec<sync::TxHistoryEntry>,
@@ -206,6 +211,7 @@ fn encrypt_for_disk(data: &WalletData) -> Result<WalletData, WalletError> {
         address: data.address.clone(),
         utxos: data.utxos.clone(),
         processed_txids: data.processed_txids.clone(),
+        sync_state: data.sync_state.clone(),
         history: data.history.clone(),
         last_sync_height: data.last_sync_height,
     })
@@ -303,6 +309,7 @@ fn wallet_from_mnemonic(mnemonic: &str) -> Result<WalletData, WalletError> {
         address: kp.address,
         utxos: Vec::new(),
         processed_txids: HashSet::new(),
+        sync_state: None,
         history: Vec::new(),
         last_sync_height: 0,
     })
@@ -365,23 +372,55 @@ pub fn sync_wallet(wallet: &mut WalletData) -> Result<sync::SyncResult, WalletEr
 }
 
 /// Sync with a progress callback: `on_progress(completed, total)`.
+///
+/// Two-layer cache:
+/// 1. **Fast path**: if block height hasn't changed since last sync, return cached data instantly.
+/// 2. **Incremental**: if new blocks exist, fetch address info. If no new txids, return cached.
+///    If new txids, fetch only *those* and merge into persisted SyncState.
 pub fn sync_wallet_with_progress(
     wallet: &mut WalletData,
     on_progress: impl Fn(usize, usize),
 ) -> Result<sync::SyncResult, WalletError> {
     let client = ExplorerClient::new();
 
-    let result = sync::sync_address_with_progress(
-        &client, &wallet.address, &wallet.processed_txids, on_progress,
+    // --- Fast path: check block height ---
+    let current_height = client.get_block_height()
+        .map_err(|e| WalletError::Sync(e.to_string()))?;
+
+    if wallet.last_sync_height > 0
+        && current_height == wallet.last_sync_height
+        && wallet.sync_state.is_some()
+    {
+        // No new blocks — return cached state
+        let state = wallet.sync_state.as_ref().unwrap();
+        let utxos = state.derive_utxos();
+        let balance = utxos.iter().map(|u| u.amount).sum();
+        return Ok(sync::SyncResult {
+            utxos,
+            balance,
+            new_tx_count: 0,
+            processed_txids: state.processed_txids.clone(),
+            history: wallet.history.clone(),
+            state: state.clone(),
+            was_cached: true,
+        });
+    }
+
+    // --- Incremental sync: pass persisted state ---
+    let result = sync::sync_incremental(
+        &client,
+        &wallet.address,
+        wallet.sync_state.take(),
+        &wallet.history,
+        on_progress,
     ).map_err(|e| WalletError::Sync(e.to_string()))?;
 
+    // Persist everything
     wallet.utxos = result.utxos.clone();
     wallet.processed_txids = result.processed_txids.clone();
+    wallet.sync_state = Some(result.state.clone());
     wallet.history = result.history.clone();
-
-    if let Ok(height) = client.get_block_height() {
-        wallet.last_sync_height = height;
-    }
+    wallet.last_sync_height = current_height;
 
     Ok(result)
 }

@@ -58,7 +58,7 @@ impl From<NetworkError> for SyncError {
 // ---------------------------------------------------------------------------
 
 /// A reference to a specific transaction output (txid:vout).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Outpoint {
     pub txid: String,
     pub vout: u32,
@@ -76,14 +76,38 @@ pub struct Outpoint {
 ///
 /// The state is designed to be serializable so it can persist across sessions
 /// (via the wallet file), enabling incremental sync.
-#[derive(Debug, Clone, Default)]
+/// Serde helper: serialize HashMap<Outpoint, Utxo> as Vec<(Outpoint, Utxo)>
+/// because JSON map keys must be strings.
+mod outpoint_map_serde {
+    use super::*;
+    use serde::{Serializer, Deserializer};
+
+    pub fn serialize<S>(map: &HashMap<Outpoint, Utxo>, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(map.len()))?;
+        for (k, v) in map {
+            seq.serialize_element(&(k, v))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<Outpoint, Utxo>, D::Error>
+    where D: Deserializer<'de> {
+        let pairs: Vec<(Outpoint, Utxo)> = serde::Deserialize::deserialize(deserializer)?;
+        Ok(pairs.into_iter().collect())
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SyncState {
     /// Outputs to our address: (outpoint → Utxo).
     /// Includes both spent and unspent until [`derive_utxos`] is called.
-    potential_utxos: HashMap<Outpoint, Utxo>,
+    #[serde(with = "outpoint_map_serde")]
+    pub potential_utxos: HashMap<Outpoint, Utxo>,
 
     /// Outpoints that have been spent (referenced as inputs in later txs).
-    spent_outpoints: HashSet<Outpoint>,
+    pub spent_outpoints: HashSet<Outpoint>,
 
     /// Transaction IDs that have already been processed.
     /// Used for incremental sync — skip these on the next sync.
@@ -95,13 +119,13 @@ impl SyncState {
         Self::default()
     }
 
-    /// Create a SyncState pre-loaded with already-processed txids.
-    /// Used to resume incremental sync from a persisted wallet.
-    pub fn with_processed(processed_txids: HashSet<String>) -> Self {
-        Self {
-            processed_txids,
-            ..Default::default()
-        }
+    /// Restore a SyncState from persisted data (for incremental sync).
+    pub fn from_persisted(
+        potential_utxos: HashMap<Outpoint, Utxo>,
+        spent_outpoints: HashSet<Outpoint>,
+        processed_txids: HashSet<String>,
+    ) -> Self {
+        Self { potential_utxos, spent_outpoints, processed_txids }
     }
 
     /// Process a single transaction from the address's history.
@@ -218,35 +242,39 @@ pub struct SyncResult {
     pub processed_txids: HashSet<String>,
     /// Transaction history entries (newest first).
     pub history: Vec<TxHistoryEntry>,
+    /// The full sync state (for persisting — enables incremental sync next time).
+    pub state: SyncState,
+    /// True if nothing changed (fast path — no new blocks or no new txids).
+    pub was_cached: bool,
 }
 
-/// Perform a full or incremental sync for the given address.
+/// Perform a full sync (no prior state). Convenience wrapper.
+pub fn sync_address(
+    client: &ExplorerClient,
+    address: &str,
+    _known_txids: &HashSet<String>,
+) -> Result<SyncResult, SyncError> {
+    sync_incremental(client, address, None, &[], |_, _| {})
+}
+
+/// Incremental sync with progress callback and persisted state.
 ///
 /// # Parameters
 /// - `client`: the explorer API client.
 /// - `address`: the Kerrigan address to sync.
-/// - `known_txids`: txids already processed in a previous sync (empty for full sync).
+/// - `prior_state`: the persisted `SyncState` from a previous sync (None for full sync).
+/// - `prior_history`: the persisted history entries from a previous sync.
+/// - `on_progress`: callback `(completed, total)` after each tx fetch.
 ///
-/// # Returns
-/// A [`SyncResult`] with the derived UTXOs, balance, and bookkeeping state.
-pub fn sync_address(
+/// # Progress phases
+/// - `(0, 0)` — fetching address info
+/// - `(0, N)` — N new transactions to fetch (0 = nothing new)
+/// - `(i, N)` — fetched i of N new transactions
+pub fn sync_incremental(
     client: &ExplorerClient,
     address: &str,
-    known_txids: &HashSet<String>,
-) -> Result<SyncResult, SyncError> {
-    sync_address_with_progress(client, address, known_txids, |_, _| {})
-}
-
-/// Like [`sync_address`], but calls `on_progress(completed, total)` after each tx fetch.
-///
-/// Progress phases:
-/// - `(0, 0)` — fetching address info (txid list)
-/// - `(0, N)` — address info fetched, N transactions to process
-/// - `(i, N)` — fetched i of N transactions
-pub fn sync_address_with_progress(
-    client: &ExplorerClient,
-    address: &str,
-    known_txids: &HashSet<String>,
+    prior_state: Option<SyncState>,
+    prior_history: &[TxHistoryEntry],
     on_progress: impl Fn(usize, usize),
 ) -> Result<SyncResult, SyncError> {
     // Signal: fetching address info
@@ -255,26 +283,48 @@ pub fn sync_address_with_progress(
     // 1. Get all txids for this address
     let all_txids = client.get_address_txids(address)?;
 
-    // 2. Filter to only new (unprocessed) txids
+    // 2. Determine which txids are new
+    let known_txids = prior_state.as_ref()
+        .map(|s| &s.processed_txids)
+        .cloned()
+        .unwrap_or_default();
+
     let new_txids: Vec<&String> = all_txids.iter()
         .filter(|txid| !known_txids.contains(*txid))
         .collect();
 
     let new_tx_count = new_txids.len();
-    let total = all_txids.len();
 
-    // Signal: we know the total now
-    on_progress(0, total);
+    // 3. If nothing new, return cached state immediately
+    if new_tx_count == 0 {
+        if let Some(state) = prior_state {
+            let utxos = state.derive_utxos();
+            let balance = utxos.iter().map(|u| u.amount).sum();
+            on_progress(0, 0);
+            return Ok(SyncResult {
+                utxos,
+                balance,
+                new_tx_count: 0,
+                processed_txids: state.processed_txids.clone(),
+                history: prior_history.to_vec(),
+                state,
+                was_cached: true,
+            });
+        }
+    }
 
-    // 3. Fetch and process ALL txids to rebuild UTXO state.
-    let mut state = SyncState::new();
-    let mut history = Vec::new();
+    // Signal: N new txs to fetch
+    on_progress(0, new_tx_count);
 
-    // Process oldest first (Insight returns newest first)
-    for (i, txid) in all_txids.iter().rev().enumerate() {
+    // 4. Start from prior state or fresh
+    let mut state = prior_state.unwrap_or_default();
+    let mut new_history = Vec::new();
+
+    // Only fetch NEW txids (oldest first)
+    for (i, txid) in new_txids.iter().rev().enumerate() {
         let tx = client.get_transaction(txid)?;
 
-        // Compute net amount for history: sum(outputs to us) - sum(inputs from us)
+        // Compute net amount for history
         let received: i64 = tx.vout.iter()
             .filter(|v| {
                 v.script_pub_key.as_ref()
@@ -292,32 +342,34 @@ pub fn sync_address_with_progress(
                 .unwrap_or(0))
             .sum();
 
-        let net = received - spent;
-
-        history.push(TxHistoryEntry {
+        new_history.push(TxHistoryEntry {
             txid: tx.txid.clone(),
-            net_amount: net,
+            net_amount: received - spent,
             timestamp: tx.time,
             block_height: tx.blockheight,
             confirmations: tx.confirmations,
         });
 
         state.process_transaction(&tx, address);
-        on_progress(i + 1, total);
+        on_progress(i + 1, new_tx_count);
     }
 
     let utxos = state.derive_utxos();
     let balance = utxos.iter().map(|u| u.amount).sum();
 
-    // History: newest first
-    history.reverse();
+    // Merge history: new entries (newest first) prepended to prior
+    new_history.reverse();
+    let mut history = new_history;
+    history.extend_from_slice(prior_history);
 
     Ok(SyncResult {
         utxos,
         balance,
         new_tx_count,
-        processed_txids: state.processed_txids,
+        processed_txids: state.processed_txids.clone(),
         history,
+        state,
+        was_cached: false,
     })
 }
 
@@ -572,11 +624,11 @@ mod tests {
     }
 
     #[test]
-    fn with_processed_resumes() {
+    fn from_persisted_resumes() {
         let mut known = HashSet::new();
         known.insert("old_tx".to_string());
 
-        let state = SyncState::with_processed(known);
+        let state = SyncState::from_persisted(HashMap::new(), HashSet::new(), known);
         assert!(state.processed_txids.contains("old_tx"));
         assert_eq!(state.derive_utxos().len(), 0);
     }
