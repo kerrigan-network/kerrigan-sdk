@@ -411,6 +411,85 @@ pub fn select_utxos(
     })
 }
 
+/// Select ALL UTXOs and compute the maximum sendable amount (total - fee).
+///
+/// Used for "send max" — spends every UTXO, single output (no change),
+/// fee is subtracted from the send amount internally.
+///
+/// Returns [`TxError::NoUtxos`] if wallet is empty, or [`TxError::InsufficientFunds`]
+/// if the total balance doesn't even cover the fee.
+pub fn select_all_utxos(
+    utxos: &[Utxo],
+    dest_script_type: ScriptType,
+) -> Result<CoinSelection, TxError> {
+    if utxos.is_empty() {
+        return Err(TxError::NoUtxos);
+    }
+
+    let total: u64 = utxos.iter().fold(0u64, |a, u| a.saturating_add(u.amount));
+
+    // Fee for N inputs, 1 output (no change)
+    let components = TxComponents::transparent(utxos.len(), vec![dest_script_type]);
+    let fee = fees::estimate_fee_default(&components);
+
+    if total <= fee {
+        return Err(TxError::InsufficientFunds { have: total, need: fee });
+    }
+
+    Ok(CoinSelection {
+        selected: utxos.to_vec(),
+        total_input: total,
+        fee,
+        change: 0,
+    })
+}
+
+/// Build, fund, and sign a "send max" transaction (entire balance minus fee).
+///
+/// All UTXOs are consumed. Single output to the destination.
+/// Fee is subtracted from the send amount.
+pub fn build_max_transaction(
+    utxos: &[Utxo],
+    to_address: &str,
+    privkey: &[u8; 32],
+    pubkey: &[u8; 33],
+    own_script_pubkey: &[u8],
+) -> Result<SignedTransaction, TxError> {
+    let dest_script_type = script::address_to_script_type(to_address)?;
+    let dest_script = script::address_to_script_pubkey(to_address)?;
+
+    let selection = select_all_utxos(utxos, dest_script_type)?;
+    let send_amount = selection.total_input - selection.fee;
+
+    // Build inputs (all UTXOs)
+    let inputs: Vec<TxInput> = selection.selected.iter()
+        .map(input_from_utxo)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Single output — no change
+    let outputs = vec![TxOutput {
+        value: send_amount,
+        script_pubkey: dest_script,
+    }];
+
+    let mut tx = Transaction::new(inputs, outputs);
+    tx.sign_p2pkh(privkey, pubkey, own_script_pubkey)?;
+
+    let tx_hex = tx.to_hex();
+    let txid = tx.txid();
+    let spent: Vec<(String, u32)> = selection.selected.iter()
+        .map(|u| (u.txid.clone(), u.vout))
+        .collect();
+
+    Ok(SignedTransaction {
+        tx,
+        tx_hex,
+        txid,
+        spent_utxos: spent,
+        fee: selection.fee,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Transaction input construction helpers
 // ---------------------------------------------------------------------------

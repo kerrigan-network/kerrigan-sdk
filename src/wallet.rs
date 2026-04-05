@@ -451,6 +451,25 @@ pub fn prepare_send(
     ).map_err(|e| WalletError::Transaction(e.to_string()))
 }
 
+/// Build and sign a "send max" transaction (entire balance minus fee).
+pub fn prepare_send_max(
+    wallet: &WalletData,
+    to_address: &str,
+) -> Result<SignedTransaction, WalletError> {
+    let kp = wallet.derive_keypair()
+        .map_err(|e| WalletError::Other(e.to_string()))?;
+    let own_script = crate::script::address_to_script_pubkey(&wallet.address)
+        .map_err(|e| WalletError::Other(e.to_string()))?;
+
+    transaction::build_max_transaction(
+        &wallet.utxos,
+        to_address,
+        &kp.privkey,
+        &kp.pubkey,
+        &own_script,
+    ).map_err(|e| WalletError::Transaction(e.to_string()))
+}
+
 /// Broadcast a signed transaction and update the wallet's UTXO set.
 pub fn broadcast_and_finalize(
     wallet: &mut WalletData,

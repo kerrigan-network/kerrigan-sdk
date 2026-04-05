@@ -61,7 +61,7 @@ fn print_usage() {
     println!("  {}            Display wallet mnemonic", term::purple("export"));
     println!("  {}           Show receiving address", term::purple("address"));
     println!("  {}           Sync and show balance", term::purple("balance"));
-    println!("  {} {} {} Send KRGN to an address", term::purple("send"), term::dim("<addr>"), term::dim("<amt>"));
+    println!("  {} {} {} Send KRGN ({} to send everything)", term::purple("send"), term::dim("<addr>"), term::dim("<amt|max>"), term::bold("max"));
     println!("  {} {}  Transaction history", term::purple("history"), term::dim("[page|all]"));
     println!("  {}              Force full resync", term::purple("sync"));
     println!("  {}           Show version", term::purple("version"));
@@ -270,12 +270,13 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
             term::bold("Usage:"),
             term::purple("send"),
             term::dim("<address>"),
-            term::dim("<amount>"),
+            term::dim("<amount|max>"),
         );
-        println!("  {} amount in KRGN (e.g., {} or {})",
+        println!("  {} amount in KRGN (e.g., {}, {}, or {})",
             term::dim("       "),
             term::bold("1.5"),
             term::bold("0.001"),
+            term::bold("max"),
         );
         println!();
         return Ok(());
@@ -283,13 +284,16 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
 
     let to_address = &args[0];
     let amount_str = &args[1];
+    let is_max = amount_str.eq_ignore_ascii_case("max");
 
     keys::validate_address(to_address)
         .map_err(|e| WalletError::Transaction(format!("invalid address: {e}")))?;
 
-    let amount = wallet::parse_krgn(amount_str)?;
-    if amount == 0 {
-        return Err(WalletError::Transaction("amount must be > 0".into()));
+    if !is_max {
+        let amount = wallet::parse_krgn(amount_str)?;
+        if amount == 0 {
+            return Err(WalletError::Transaction("amount must be > 0".into()));
+        }
     }
 
     let mut wallet_data = wallet::load_wallet()?;
@@ -297,14 +301,33 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
     println!();
     let _ = sync_with_spinner(&mut wallet_data);
 
-    let signed = wallet::prepare_send(&wallet_data, to_address, amount)?;
+    let (signed, amount) = if is_max {
+        let signed = wallet::prepare_send_max(&wallet_data, to_address)?;
+        // send_amount = total_input - fee (computed inside build_max_transaction)
+        let amount = signed.tx.outputs.first()
+            .map(|o| o.value)
+            .unwrap_or(0);
+        (signed, amount)
+    } else {
+        let amount = wallet::parse_krgn(amount_str)?;
+        let signed = wallet::prepare_send(&wallet_data, to_address, amount)?;
+        (signed, amount)
+    };
 
     println!();
     term::header("Transaction");
     println!();
     println!("   {}  {}", term::dim("To:"), term::bold(to_address));
-    println!("   {}  {} KRGN", term::dim("Amount:"), term::green_bold(&wallet::format_krgn(amount)));
-    println!("   {}  {} KRGN", term::dim("Fee:"), term::yellow(&wallet::format_krgn(signed.fee)));
+    println!("   {}  {} KRGN{}",
+        term::dim("Amount:"),
+        term::green_bold(&wallet::format_krgn(amount)),
+        if is_max { term::dim(" (max)").to_string() } else { String::new() },
+    );
+    println!("   {}  {} KRGN{}",
+        term::dim("Fee:"),
+        term::yellow(&wallet::format_krgn(signed.fee)),
+        if is_max { term::dim(" (internal)").to_string() } else { String::new() },
+    );
     println!("   {}  {} KRGN",
         term::dim("Total:"),
         term::bold(&wallet::format_krgn(amount + signed.fee)),
@@ -314,7 +337,7 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
     let remaining = wallet_data.balance().saturating_sub(amount + signed.fee);
     println!("   {}  {} KRGN",
         term::dim("Remaining:"),
-        wallet::format_krgn(remaining),
+        if remaining == 0 { term::dim("0.00000000") } else { wallet::format_krgn(remaining) },
     );
     println!();
 
