@@ -23,7 +23,7 @@ use serde::Deserialize;
 use std::fmt;
 use std::time::Duration;
 
-use crate::params;
+use kerrigan_sdk::params;
 
 // ---------------------------------------------------------------------------
 // Configuration

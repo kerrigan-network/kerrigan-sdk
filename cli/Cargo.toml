@@ -1,0 +1,26 @@
+[package]
+name = "kerrigan-wallet-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Kerrigan Network light wallet CLI"
+license = "MIT"
+
+[[bin]]
+name = "kerrigan-wallet"
+path = "src/main.rs"
+
+[dependencies]
+kerrigan-sdk = { path = "../sdk" }
+
+# HTTP client
+ureq = "2"
+
+# Serialization (for network JSON)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# System (CLI-only deps)
+dirs = "5"
+machine-uid = "0.5"
+libc = "0.2"
+sha2 = "0.10"

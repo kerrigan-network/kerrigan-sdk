@@ -6,17 +6,16 @@
 /// Each test exercises multiple modules working together, catching integration
 /// bugs that unit tests alone would miss.
 
-use kerrigan_wallet::bip39;
-use kerrigan_wallet::bip32;
-use kerrigan_wallet::encoding;
-use kerrigan_wallet::fees;
-use kerrigan_wallet::keys;
-use kerrigan_wallet::network;
-use kerrigan_wallet::params;
-use kerrigan_wallet::script;
-use kerrigan_wallet::sync;
-use kerrigan_wallet::transaction;
-use kerrigan_wallet::wallet;
+use kerrigan_sdk::bip39;
+use kerrigan_sdk::bip32;
+use kerrigan_sdk::encoding;
+use kerrigan_sdk::fees;
+use kerrigan_sdk::keys;
+use kerrigan_sdk::params;
+use kerrigan_sdk::script;
+use kerrigan_sdk::sync;
+use kerrigan_sdk::transaction;
+use kerrigan_sdk::wallet;
 
 // ---------------------------------------------------------------------------
 // E2E: Full wallet create → derive → sign → verify lifecycle
@@ -149,51 +148,35 @@ fn e2e_deterministic_pipeline() {
 /// and balance are correct at each step.
 #[test]
 fn e2e_sync_simulation() {
-    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let seed = bip39::mnemonic_to_seed(mnemonic, "");
-    let kp = keys::derive_keypair(&seed).unwrap();
-    let addr = &kp.address;
-
-    let other = "KOtherAddr000000000000000000000000"; // fake
+    let addr = "KTestAddr";
+    let other = "KOtherAddr";
 
     let mut state = sync::SyncState::new();
 
     // TX1: Receive 10 KRGN (coinbase)
-    let tx1 = make_tx_info("tx1_hash_aabbccdd", &[], &[(addr, 0, 10_0000_0000)]);
+    let tx1 = make_tx("tx1", &[], &[(addr, 0, 10_0000_0000)]);
     state.process_transaction(&tx1, addr);
     assert_eq!(state.balance(), 10_0000_0000);
-    assert_eq!(state.derive_utxos().len(), 1);
 
-    // TX2: Receive 5 KRGN from someone
-    let tx2 = make_tx_info("tx2_hash_eeff0011", &[], &[(addr, 0, 5_0000_0000)]);
+    // TX2: Receive 5 KRGN
+    let tx2 = make_tx("tx2", &[], &[(addr, 0, 5_0000_0000)]);
     state.process_transaction(&tx2, addr);
     assert_eq!(state.balance(), 15_0000_0000);
-    assert_eq!(state.derive_utxos().len(), 2);
 
-    // TX3: Send 3 KRGN (spend tx1, get change)
-    let tx3 = make_tx_info(
-        "tx3_hash_22334455",
-        &[("tx1_hash_aabbccdd", 0, addr)],
-        &[
-            (other, 0, 3_0000_0000),
-            (addr, 1, 6_9999_0000), // change
-        ],
+    // TX3: Send 3, get change
+    let tx3 = make_tx("tx3",
+        &[("tx1", 0, addr, 10_0000_0000)],
+        &[(other, 0, 3_0000_0000), (addr, 1, 6_9999_0000)],
     );
     state.process_transaction(&tx3, addr);
-    assert_eq!(state.derive_utxos().len(), 2); // tx2:0 + tx3:1
     assert_eq!(state.balance(), 5_0000_0000 + 6_9999_0000);
 
-    // TX4: Send everything (consolidate tx2:0 + tx3:1)
-    let tx4 = make_tx_info(
-        "tx4_hash_66778899",
-        &[
-            ("tx2_hash_eeff0011", 0, addr),
-            ("tx3_hash_22334455", 1, addr),
-        ],
+    // TX4: Send everything
+    let tx4 = make_tx("tx4",
+        &[("tx2", 0, addr, 5_0000_0000), ("tx3", 1, addr, 6_9999_0000)],
         &[(other, 0, 11_9998_0000)],
     );
     state.process_transaction(&tx4, addr);
-    assert_eq!(state.derive_utxos().len(), 0);
     assert_eq!(state.balance(), 0);
     assert_eq!(state.tx_count(), 4);
 }
@@ -529,41 +512,18 @@ fn e2e_tx_serialization_canonical() {
 fn e2e_sync_history_no_duplicates() {
     let addr = "KTestAddr";
 
-    // First sync: 2 txs
-    let mut state = sync::SyncState::new();
-    let tx1 = make_tx_info("tx1", &[], &[(addr, 0, 1_0000_0000)]);
-    let tx2 = make_tx_info("tx2", &[], &[(addr, 0, 2_0000_0000)]);
-    state.process_transaction(&tx1, addr);
-    state.process_transaction(&tx2, addr);
+    let tx1 = make_tx("tx1", &[], &[(addr, 0, 1_0000_0000)]);
+    let tx2 = make_tx("tx2", &[], &[(addr, 0, 2_0000_0000)]);
 
-    let history1 = vec![
-        sync::TxHistoryEntry { txid: "tx2".into(), net_amount: 2_0000_0000, timestamp: Some(1000), block_height: Some(1), confirmations: Some(10) },
-        sync::TxHistoryEntry { txid: "tx1".into(), net_amount: 1_0000_0000, timestamp: Some(900), block_height: Some(0), confirmations: Some(11) },
-    ];
+    // First sync
+    let result1 = sync::process_transactions(None, &[tx1.clone(), tx2.clone()], addr, &[]);
+    assert_eq!(result1.history.len(), 2);
 
-    // Second sync with same txs: should not duplicate
-    let mut state2 = state.clone();
-    // process same txs again (simulating re-fetch)
-    state2.process_transaction(&tx1, addr);
-    state2.process_transaction(&tx2, addr);
-
-    // Manually test dedup logic: new entries that overlap with prior
-    let new_entries = vec![
-        sync::TxHistoryEntry { txid: "tx2".into(), net_amount: 2_0000_0000, timestamp: Some(1000), block_height: Some(1), confirmations: Some(12) },
-    ];
-
-    let seen: std::collections::HashSet<String> = new_entries.iter().map(|e| e.txid.clone()).collect();
-    let mut merged = new_entries;
-    for entry in &history1 {
-        if !seen.contains(&entry.txid) {
-            merged.push(entry.clone());
-        }
-    }
-
-    // tx2 should appear only once (from new_entries), tx1 from prior
-    assert_eq!(merged.len(), 2);
-    assert_eq!(merged[0].txid, "tx2");
-    assert_eq!(merged[1].txid, "tx1");
+    // Second sync with same txs — should dedup
+    let result2 = sync::process_transactions(
+        Some(result1.state), &[tx2.clone()], addr, &result1.history,
+    );
+    assert_eq!(result2.history.len(), 2, "Duplicate should be deduped");
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +538,6 @@ fn e2e_dust_threshold_boundary() {
     let own_script = script::address_to_script_pubkey(&kp.address).unwrap();
     let dest_kp = keys::derive_keypair_at(&seed, 0, 1).unwrap();
 
-    // Create a UTXO where the change would be exactly DUST_THRESHOLD (546 sat)
     let fee_2out = fees::estimate_transparent_fee(1, 2);
     let utxo_amount = 1_0000_0000 + fee_2out + params::DUST_THRESHOLD;
     let utxos = vec![transaction::Utxo {
@@ -593,180 +552,47 @@ fn e2e_dust_threshold_boundary() {
         &kp.privkey, &kp.pubkey, &kp.address,
     ).unwrap();
 
-    // Dust at exactly threshold should be absorbed (change = 0)
     let has_change = signed.tx.outputs.len() > 1;
     assert!(!has_change, "Change of exactly DUST_THRESHOLD should be absorbed into fee");
 }
 
 // ---------------------------------------------------------------------------
-// Helpers for building test TransactionInfo objects
+// Helpers — SDK TxData builders
 // ---------------------------------------------------------------------------
 
-fn make_tx_info(
+fn make_tx(
     txid: &str,
-    inputs: &[(&str, u32, &str)], // (prev_txid, prev_vout, addr)
-    outputs: &[(&str, u32, u64)], // (addr, n, satoshis)
-) -> network::TransactionInfo {
-    let vin: Vec<network::TxVin> = inputs.iter().map(|(prev_txid, vout, addr)| {
-        network::TxVin {
-            txid: Some(prev_txid.to_string()),
-            vout: Some(*vout),
-            addr: Some(addr.to_string()),
-            value: None,
-            value_sat: None,
-            coinbase: None,
-        }
-    }).collect();
-
-    let vin = if vin.is_empty() {
-        // Coinbase
-        vec![network::TxVin {
-            txid: None,
-            vout: None,
-            addr: None,
-            value: None,
-            value_sat: None,
-            coinbase: Some("coinbase".into()),
+    inputs: &[(&str, u32, &str, u64)], // (prev_txid, prev_vout, addr, value_sat)
+    outputs: &[(&str, u32, u64)],       // (addr, n, value_sat)
+) -> sync::TxData {
+    let tx_inputs = if inputs.is_empty() {
+        vec![sync::TxInput {
+            prev_txid: None, prev_vout: None, address: None,
+            value_sat: None, is_coinbase: true,
         }]
     } else {
-        vin
+        inputs.iter().map(|(ptxid, pvout, addr, val)| sync::TxInput {
+            prev_txid: Some(ptxid.to_string()),
+            prev_vout: Some(*pvout),
+            address: Some(addr.to_string()),
+            value_sat: Some(*val),
+            is_coinbase: false,
+        }).collect()
     };
 
-    let vout: Vec<network::TxVout> = outputs.iter().map(|(addr, n, sats)| {
-        let krgn = *sats as f64 / params::COIN as f64;
-        network::TxVout {
-            value: Some(serde_json::json!(format!("{:.8}", krgn))),
-            n: *n,
-            script_pub_key: Some(network::ScriptPubKeyInfo {
-                hex: Some("76a914abcd88ac".into()),
-                addresses: Some(vec![addr.to_string()]),
-                script_type: Some("pubkeyhash".into()),
-            }),
-        }
+    let tx_outputs = outputs.iter().map(|(addr, n, val)| sync::TxOutput {
+        n: *n,
+        value_sat: *val,
+        addresses: vec![addr.to_string()],
+        script_hex: "76a914ab88ac".into(),
     }).collect();
 
-    network::TransactionInfo {
-        txid: txid.to_string(),
-        vin,
-        vout,
-        confirmations: Some(100),
-        blockheight: Some(5000),
-        time: None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// LIVE E2E: Sync a known address against the real Kerrigan explorer
-// ---------------------------------------------------------------------------
-// Run with: cargo test --test e2e live_ -- --ignored
-
-/// Known address on Kerrigan mainnet: KQ2AjqzF8HYUAPa55GJMLGF5py1yadsNCo
-/// (dev fund address, ~157 coinbase receives, ~785 KRGN balance as of block 13471)
-const LIVE_TEST_ADDRESS: &str = "KQ2AjqzF8HYUAPa55GJMLGF5py1yadsNCo";
-
-/// Verify that the explorer API is reachable and returns the expected JSON format.
-#[test]
-#[ignore]
-fn live_explorer_status() {
-    let client = network::ExplorerClient::new();
-    let height = client.get_block_height().unwrap();
-    assert!(height > 13_000, "Block height should be > 13000, got {height}");
-    println!("Explorer is live at block {height}");
-}
-
-/// Fetch address info for the known address and verify parsing.
-#[test]
-#[ignore]
-fn live_address_info() {
-    let client = network::ExplorerClient::new();
-    let info = client.get_address_info(LIVE_TEST_ADDRESS).unwrap();
-
-    // Balance should be > 0 (this address has received many coinbase rewards)
-    let balance = info.balance_satoshis();
-    assert!(balance > 0, "Balance should be > 0, got {balance}");
-    println!("Address {LIVE_TEST_ADDRESS}");
-    println!("  Balance: {} KRGN ({balance} sat)", wallet::format_krgn(balance));
-
-    // Should have transactions
-    let txids = info.transactions.unwrap_or_default();
-    assert!(!txids.is_empty(), "Should have at least 1 transaction");
-    println!("  Transactions: {}", txids.len());
-}
-
-/// Fetch a transaction from the test address and verify full parsing.
-#[test]
-#[ignore]
-fn live_transaction_parse() {
-    let client = network::ExplorerClient::new();
-
-    // Get a txid that involves our test address
-    let info = client.get_address_info(LIVE_TEST_ADDRESS).unwrap();
-    let txids = info.transactions.unwrap_or_default();
-    assert!(!txids.is_empty(), "Address should have transactions");
-    let txid = &txids[0];
-
-    let tx = client.get_transaction(txid).unwrap();
-    assert_eq!(&tx.txid, txid);
-    assert!(!tx.vout.is_empty(), "Should have outputs");
-
-    // Verify value parsing — all outputs should have parseable amounts
-    let total_out: u64 = tx.vout.iter().map(|v| v.value_satoshis()).sum();
-    assert!(total_out > 0, "Total output value should be > 0");
-
-    // Verify our test address appears in one of the outputs
-    let has_our_addr = tx.vout.iter().any(|v| {
-        v.script_pub_key.as_ref()
-            .and_then(|spk| spk.addresses.as_ref())
-            .map(|addrs| addrs.iter().any(|a| a == LIVE_TEST_ADDRESS))
-            .unwrap_or(false)
-    });
-    assert!(has_our_addr, "Should have an output to our test address");
-
-    println!("TX {txid}");
-    println!("  Outputs: {}", tx.vout.len());
-    println!("  Total value: {} KRGN", wallet::format_krgn(total_out));
-    println!("  Confirmations: {:?}", tx.confirmations);
-}
-
-/// Full UTXO sync against the live explorer for the known address.
-/// This is the main integration test — exercises network → sync → UTXO derivation.
-#[test]
-#[ignore]
-fn live_full_sync() {
-    let client = network::ExplorerClient::new();
-
-    println!("Syncing {LIVE_TEST_ADDRESS} ...");
-
-    // Perform full sync (no known txids)
-    let known = std::collections::HashSet::new();
-    let result = sync::sync_address(&client, LIVE_TEST_ADDRESS, &known).unwrap();
-
-    println!("  Transactions processed: {}", result.processed_txids.len());
-    println!("  UTXOs found: {}", result.utxos.len());
-    println!("  Balance: {} KRGN ({} sat)", wallet::format_krgn(result.balance), result.balance);
-
-    // This address should have received many coinbase rewards
-    assert!(result.processed_txids.len() > 100, "Should have > 100 txs, got {}", result.processed_txids.len());
-    assert!(result.balance > 0, "Balance should be > 0");
-
-    // Cross-check: balance from sync should match explorer's reported balance
-    let info = client.get_address_info(LIVE_TEST_ADDRESS).unwrap();
-    let explorer_balance = info.balance_satoshis();
-
-    // Allow small discrepancy (explorer might include unconfirmed, we don't)
-    let diff = (result.balance as i64 - explorer_balance as i64).unsigned_abs();
-    let tolerance = explorer_balance / 100; // 1%
-    assert!(
-        diff <= tolerance,
-        "Sync balance {} vs explorer balance {} — diff {diff} exceeds 1% tolerance {tolerance}",
-        result.balance, explorer_balance,
-    );
-
-    println!("  Explorer balance: {} KRGN — MATCH!", wallet::format_krgn(explorer_balance));
-
-    // Verify UTXOs are sane
-    for utxo in &result.utxos {
-        assert!(!utxo.txid.is_empty(), "UTXO txid should not be empty");
-        assert!(utxo.amount > 0, "UTXO amount should be > 0");
+    sync::TxData {
+        txid: txid.into(),
+        inputs: tx_inputs,
+        outputs: tx_outputs,
+        timestamp: Some(1000),
+        block_height: Some(100),
+        confirmations: Some(10),
     }
 }

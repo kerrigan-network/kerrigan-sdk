@@ -3,13 +3,19 @@
 /// "My stare alone would reduce you to ashes."
 ///   — Sarah Kerrigan, Queen of Blades
 
+mod network;
+mod storage;
+mod sync_service;
+mod term;
+
 use std::io::{self, Write};
 use std::process;
 
-use kerrigan_wallet::keys;
-use kerrigan_wallet::sync::TxHistoryEntry;
-use kerrigan_wallet::term::{self, Spinner};
-use kerrigan_wallet::wallet::{self, WalletError};
+use kerrigan_sdk::keys;
+use kerrigan_sdk::sync::TxHistoryEntry;
+use kerrigan_sdk::transaction::SignedTransaction;
+use kerrigan_sdk::wallet::{self, WalletData, WalletError};
+use term::Spinner;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -89,7 +95,7 @@ fn confirm(prompt: &str, expected: &str) -> bool {
 }
 
 /// Run a sync with a spinner, save the wallet, and return the result.
-fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wallet::sync::SyncResult, WalletError> {
+fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_sdk::sync::SyncResult, WalletError> {
     let spinner = Spinner::start("Syncing");
 
     // We need to move the spinner into the closure, but the closure is called
@@ -97,7 +103,7 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wa
     let spinner_ref = std::sync::Arc::new(spinner);
     let spinner_for_closure = spinner_ref.clone();
 
-    let result = wallet::sync_wallet_with_progress(wallet_data, move |done, total| {
+    let result = crate::sync_service::sync_wallet(wallet_data, move |done, total| {
         if total == 0 && done == 0 {
             // Phase 1: fetching address info
             spinner_for_closure.set_progress(0.0, Some("Fetching address"));
@@ -116,16 +122,14 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wa
     match &result {
         Ok(r) => {
             if let Some(s) = spinner {
-                if r.was_cached {
-                    s.finish_with("Up to date");
-                } else if r.new_tx_count == 0 {
+                if r.new_tx_count == 0 {
                     s.finish_with("No new transactions");
                 } else {
                     s.finish_with(&format!("Synced {} new transaction{}", r.new_tx_count,
                         if r.new_tx_count == 1 { "" } else { "s" }));
                 }
             }
-            wallet::save_wallet(wallet_data)?;
+            crate::storage::save_wallet(wallet_data)?;
         }
         Err(e) => {
             if let Some(s) = spinner {
@@ -142,7 +146,7 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_wa
 // ---------------------------------------------------------------------------
 
 fn cmd_create() -> Result<(), WalletError> {
-    let wallet_data = wallet::create_wallet()?;
+    let wallet_data = crate::storage::create_wallet()?;
 
     println!();
     println!("  {}", term::purple_bold("⚡ Welcome to the Swarm. ⚡"));
@@ -177,8 +181,8 @@ fn cmd_create() -> Result<(), WalletError> {
 }
 
 fn cmd_import() -> Result<(), WalletError> {
-    if wallet::wallet_exists() {
-        return Err(WalletError::AlreadyExists);
+    if crate::storage::wallet_exists() {
+        return Err(WalletError::Other("Wallet already exists.".into()));
     }
 
     println!();
@@ -189,7 +193,7 @@ fn cmd_import() -> Result<(), WalletError> {
         return Err(WalletError::InvalidMnemonic("empty input".into()));
     }
 
-    let wallet_data = wallet::import_wallet(&mnemonic)?;
+    let wallet_data = crate::storage::import_wallet(&mnemonic)?;
 
     println!();
     println!("  {} Wallet imported.", term::green("✓"));
@@ -205,7 +209,7 @@ fn cmd_import() -> Result<(), WalletError> {
 }
 
 fn cmd_export() -> Result<(), WalletError> {
-    let wallet_data = wallet::load_wallet()?;
+    let wallet_data = crate::storage::load_wallet()?;
 
     println!();
     println!("  {} Your recovery phrase grants {} access to your funds.",
@@ -235,13 +239,13 @@ fn cmd_export() -> Result<(), WalletError> {
 }
 
 fn cmd_address() -> Result<(), WalletError> {
-    let wallet_data = wallet::load_wallet()?;
+    let wallet_data = crate::storage::load_wallet()?;
     println!("{}", term::purple_bold(&wallet_data.address));
     Ok(())
 }
 
 fn cmd_balance() -> Result<(), WalletError> {
-    let mut wallet_data = wallet::load_wallet()?;
+    let mut wallet_data = crate::storage::load_wallet()?;
 
     println!();
     let _ = sync_with_spinner(&mut wallet_data);
@@ -296,13 +300,13 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         }
     }
 
-    let mut wallet_data = wallet::load_wallet()?;
+    let mut wallet_data = crate::storage::load_wallet()?;
 
     println!();
     let _ = sync_with_spinner(&mut wallet_data);
 
     let (signed, amount) = if is_max {
-        let signed = wallet::prepare_send_max(&wallet_data, to_address)?;
+        let signed = kerrigan_sdk::wallet::prepare_send_max(&wallet_data, to_address)?;
         // send_amount = total_input - fee (computed inside build_max_transaction)
         let amount = signed.tx.outputs.first()
             .map(|o| o.value)
@@ -310,7 +314,7 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         (signed, amount)
     } else {
         let amount = wallet::parse_krgn(amount_str)?;
-        let signed = wallet::prepare_send(&wallet_data, to_address, amount)?;
+        let signed = kerrigan_sdk::wallet::prepare_send(&wallet_data, to_address, amount)?;
         (signed, amount)
     };
 
@@ -347,7 +351,7 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
     }
 
     let spinner = Spinner::start("Broadcasting");
-    let txid = wallet::broadcast_and_finalize(&mut wallet_data, &signed);
+    let txid = crate::broadcast_and_finalize(&mut wallet_data, &signed);
     match txid {
         Ok(txid) => {
             spinner.finish_with("Transaction sent!");
@@ -365,7 +369,7 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
 }
 
 fn cmd_history(args: &[String]) -> Result<(), WalletError> {
-    let mut wallet_data = wallet::load_wallet()?;
+    let mut wallet_data = crate::storage::load_wallet()?;
 
     println!();
 
@@ -491,7 +495,7 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
 }
 
 fn cmd_sync() -> Result<(), WalletError> {
-    let mut wallet_data = wallet::load_wallet()?;
+    let mut wallet_data = crate::storage::load_wallet()?;
 
     // Force full resync — clear all cached state
     wallet_data.processed_txids.clear();
@@ -561,4 +565,17 @@ fn format_timestamp(ts: u64) -> String {
 
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// Broadcast a signed transaction and update the wallet.
+fn broadcast_and_finalize(
+    wallet: &mut WalletData,
+    signed: &SignedTransaction,
+) -> Result<String, WalletError> {
+    let client = network::ExplorerClient::new();
+    let txid = client.broadcast(&signed.tx_hex)
+        .map_err(|e| WalletError::Transaction(e.to_string()))?;
+    wallet.finalize_send(&signed.spent_utxos);
+    storage::save_wallet(wallet)?;
+    Ok(txid)
 }

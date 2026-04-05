@@ -274,21 +274,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "kerrigan-wallet"
+name = "kerrigan-sdk"
 version = "0.1.0"
 dependencies = [
- "dirs",
  "getrandom",
  "hmac",
- "libc",
- "machine-uid",
  "ripemd",
  "secp256k1",
  "serde",
  "serde_json",
  "sha2",
- "ureq",
  "zeroize",
+]
+
+[[package]]
+name = "kerrigan-wallet-cli"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "kerrigan-sdk",
+ "libc",
+ "machine-uid",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
 ]
 
 [[package]]
