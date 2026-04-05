@@ -3,9 +3,11 @@
 /// "My stare alone would reduce you to ashes."
 ///   — Sarah Kerrigan, Queen of Blades
 
+#[allow(dead_code)]
 mod network;
 mod storage;
 mod sync_service;
+#[allow(dead_code)]
 mod term;
 
 use std::io::{self, Write};

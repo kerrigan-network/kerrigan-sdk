@@ -3,8 +3,7 @@
 use kerrigan_sdk::sync::{self, TxData, TxInput, TxOutput, SyncResult};
 use kerrigan_sdk::wallet::{WalletData, WalletError};
 
-use crate::network::{ExplorerClient, NetworkError, TransactionInfo};
-use crate::storage;
+use crate::network::{ExplorerClient, TransactionInfo};
 
 // ---------------------------------------------------------------------------
 // Convert explorer types → SDK types
