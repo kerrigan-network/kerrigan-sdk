@@ -1,0 +1,28 @@
+[package]
+name = "kerrigan-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Kerrigan Network shield sync bridge — serves compact Sapling data to light wallets"
+license = "MIT"
+
+[dependencies]
+# SDK for compact encoding + types
+kerrigan-sdk = { path = "../sdk" }
+
+# HTTP server
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+
+# RPC client (blocking — used in spawn_blocking)
+ureq = { version = "2", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+zcash_note_encryption = "0.4"
+
+# Utilities
+sha2 = "0.10"
