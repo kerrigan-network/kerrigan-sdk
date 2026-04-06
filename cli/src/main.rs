@@ -583,12 +583,18 @@ fn get_bridge_block_height() -> Result<u32, WalletError> {
 /// Broadcast a raw transaction via the bridge.
 fn broadcast_via_bridge(tx_hex: &str) -> Result<String, WalletError> {
     let url = format!("{}/sendrawtransaction", kerrigan_sdk::params::BRIDGE_URL);
-    let resp = ureq::post(&url)
-        .send_string(tx_hex)
-        .map_err(|e| WalletError::Other(format!("broadcast failed: {e}")))?;
-    let txid = resp.into_string()
-        .map_err(|e| WalletError::Other(format!("read txid: {e}")))?;
-    Ok(txid.trim().to_string())
+    match ureq::post(&url).send_string(tx_hex) {
+        Ok(resp) => {
+            let txid = resp.into_string()
+                .map_err(|e| WalletError::Other(format!("read txid: {e}")))?;
+            Ok(txid.trim().to_string())
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(WalletError::Other(format!("broadcast rejected (HTTP {code}): {body}")))
+        }
+        Err(e) => Err(WalletError::Other(format!("broadcast failed: {e}"))),
+    }
 }
 
 fn cmd_history(args: &[String]) -> Result<(), WalletError> {

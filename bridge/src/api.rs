@@ -133,8 +133,10 @@ pub async fn send_raw_transaction(
             Ok(txid)
         }
         Err(e) => {
-            eprintln!("  [broadcast] FAILED: {e}");
-            Err((StatusCode::BAD_GATEWAY, format!("broadcast error: {e}")))
+            let msg = format!("{e}");
+            eprintln!("  [broadcast] FAILED: {msg}");
+            // Return 400 with error details (not 502) so client sees the message
+            Err((StatusCode::BAD_REQUEST, msg))
         }
     }
 }
