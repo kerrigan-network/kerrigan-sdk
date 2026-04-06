@@ -32,11 +32,24 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build
-        run: cargo build --release
+      # Build SDK + CLI on all platforms, bridge only on Unix (ZMQ is Unix-only)
+      - name: Build (all platforms)
+        run: cargo build --release -p kerrigan-sdk -p kerrigan-wallet-cli
+
+      - name: Build bridge (Unix only)
+        if: runner.os != 'Windows'
+        run: cargo build --release -p kerrigan-bridge
 
       - name: Test
-        run: cargo test
+        run: cargo test -p kerrigan-sdk -p kerrigan-wallet-cli
+
+      - name: Test bridge (Unix only)
+        if: runner.os != 'Windows'
+        run: cargo test -p kerrigan-bridge
 
       - name: Clippy
-        run: cargo clippy -- -D warnings -A clippy::empty-line-after-doc-comments -A clippy::doc-nested-refdefs -A clippy::manual-is-multiple-of -A clippy::manual-div-ceil -A clippy::large-const-arrays -A clippy::redundant-closure -A clippy::collapsible-if -A clippy::vec-init-then-push -A clippy::ptr-arg -A clippy::if-same-then-else
+        run: cargo clippy -p kerrigan-sdk -p kerrigan-wallet-cli -- -D warnings
+
+      - name: Clippy bridge (Unix only)
+        if: runner.os != 'Windows'
+        run: cargo clippy -p kerrigan-bridge -- -D warnings
