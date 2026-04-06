@@ -4,7 +4,6 @@
 /// `m_sapling / purpose' / coin_type' / account'`
 ///
 /// Kerrigan coin type: 99888
-
 use sapling::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
 use sapling::PaymentAddress;
 use zcash_keys::encoding;

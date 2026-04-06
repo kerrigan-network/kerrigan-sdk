@@ -2,7 +2,6 @@
 ///
 /// Persisted as a simple JSON file so the bridge doesn't need to rescan
 /// the entire chain on restart.
-
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

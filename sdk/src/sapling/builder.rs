@@ -6,7 +6,6 @@
 /// 3. Compute Kerrigan sighash and apply signatures
 ///
 /// Then serializes in Kerrigan's type 10 extra payload format.
-
 use rand_core::OsRng;
 use sapling::builder::BundleType;
 use sapling::note_encryption::Zip212Enforcement;
@@ -35,6 +34,7 @@ pub struct SaplingTxResult {
 // ---------------------------------------------------------------------------
 
 /// Build a shielding transaction (transparent UTXOs → sapling output).
+#[allow(clippy::too_many_arguments)]
 pub fn build_shield(
     utxos: &[Utxo],
     privkey: &[u8],

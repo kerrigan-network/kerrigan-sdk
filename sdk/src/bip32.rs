@@ -1,6 +1,5 @@
 /// BIP32 hierarchical deterministic key derivation — from scratch.
 /// No external BIP32 crate: HMAC-SHA512 derivation, hardened/normal children, path parsing.
-
 use hmac::{Hmac, Mac};
 use sha2::{Sha256, Sha512, Digest};
 use ripemd::Ripemd160;

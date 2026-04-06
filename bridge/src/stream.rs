@@ -2,7 +2,6 @@
 ///
 /// Takes scanned `RawShieldBlock`s and encodes them into the binary wire
 /// format that light wallets consume via the SDK's `parse_shield_stream`.
-
 use kerrigan_sdk::sapling::sync::{
     encode_block_marker, encode_compact_tx, BlockEntry, RawShieldBlock,
 };

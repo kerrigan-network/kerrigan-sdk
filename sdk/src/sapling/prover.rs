@@ -5,7 +5,6 @@
 /// (from disk, network, etc.) — the SDK never touches I/O.
 ///
 /// Parameter files are the standard Zcash Sapling params (~50 MB total).
-
 use sapling::circuit::{OutputParameters, SpendParameters};
 use sha2::{Digest, Sha256};
 

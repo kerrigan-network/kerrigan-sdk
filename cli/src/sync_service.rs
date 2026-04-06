@@ -1,5 +1,4 @@
 /// Sync orchestration for the CLI — bridges network I/O to the SDK sync engine.
-
 use kerrigan_sdk::sync::{self, TxData, TxInput, TxOutput, SyncResult};
 use kerrigan_sdk::wallet::{WalletData, WalletError};
 

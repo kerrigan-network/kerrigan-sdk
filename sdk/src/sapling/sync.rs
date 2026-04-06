@@ -16,7 +16,6 @@
 /// Compact mode strips proofs, signatures, and unused fields — light wallets
 /// don't verify proofs (the blockchain already did). This cuts ~42-62% of
 /// sync data before transport compression.
-
 use sapling::note_encryption::{PreparedIncomingViewingKey, SaplingDomain, Zip212Enforcement};
 use sapling::zip32::ExtendedFullViewingKey;
 use sapling::{Node, NullifierDerivingKey};
@@ -293,7 +292,7 @@ pub fn process_compact_transaction(
     tx: &CompactTransaction,
     extfvk: &ExtendedFullViewingKey,
     nk: &NullifierDerivingKey,
-    existing_witnesses: &mut Vec<SpendableNote>,
+    existing_witnesses: &mut [SpendableNote],
     new_notes: &mut Vec<SpendableNote>,
     block_height: u32,
     spent_nullifiers: &mut Vec<String>,

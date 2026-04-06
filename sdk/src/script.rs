@@ -9,7 +9,6 @@
 /// |-------|---------------------------------------------------------------|----------------|
 /// | P2PKH | `OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG`| `K...` (45)    |
 /// | P2SH  | `OP_HASH160 <20-byte hash> OP_EQUAL`                         | `7...` (16)    |
-
 use crate::encoding::{base58check_decode, EncodingError};
 use crate::params;
 use std::fmt;

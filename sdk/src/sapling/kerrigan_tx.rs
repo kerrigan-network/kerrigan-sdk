@@ -3,7 +3,6 @@
 /// Kerrigan uses Dash-style type 10 transactions with Sapling data in
 /// `vExtraPayload`. The sighash for the binding signature differs from
 /// PIVX/Zcash — it includes `nType` and `payloadVersion` fields.
-
 use sha2::{Sha256, Digest};
 
 use sapling::bundle::{Authorized, Bundle};

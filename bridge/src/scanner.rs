@@ -3,7 +3,6 @@
 /// Uses verbosity 1 (txid list) + getrawtransaction (raw hex) to avoid the
 /// node's broken JSON serialization of Sapling txs (MoneyRange bug in TxToUniv).
 /// Chains through blocks via `nextblockhash` (one getblock call per block).
-
 use kerrigan_sdk::encoding;
 use kerrigan_sdk::sapling::sync::{
     CompactSaplingOutput, CompactTransaction, RawShieldBlock, BlockEntry,

@@ -8,7 +8,6 @@
 /// - Device-bound encryption (symmetric cipher, caller provides key)
 ///
 /// Persistence (filesystem, IndexedDB, etc.) is the caller's responsibility.
-
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
 use std::collections::HashSet;
@@ -122,7 +121,7 @@ mod hex_bytes {
     use serde::{self, Deserialize, Deserializer, Serializer};
     use crate::encoding::{hex_encode, hex_decode};
 
-    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where S: Serializer {
         serializer.serialize_str(&hex_encode(bytes))
     }

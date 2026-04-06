@@ -1,6 +1,5 @@
 /// Kerrigan Network chain parameters.
 /// Single source of truth for all network constants.
-
 // -- Coin --
 pub const NETWORK_NAME: &str = "Kerrigan";
 pub const TICKER: &str = "KRGN";

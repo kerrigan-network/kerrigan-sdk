@@ -18,7 +18,6 @@
 /// Each method tries the explorer URL once (single-explorer setup). If Kerrigan
 /// adds mirror explorers in the future, the `explorers` list can be extended
 /// and the retry loop will try each in turn.
-
 use serde::Deserialize;
 use std::fmt;
 use std::time::Duration;

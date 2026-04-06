@@ -1,5 +1,4 @@
 /// Sapling shield sync — fetches compact data from the bridge and updates wallet state.
-
 use kerrigan_sdk::params;
 use kerrigan_sdk::sapling::keys;
 use kerrigan_sdk::sapling::sync;

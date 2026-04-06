@@ -2,7 +2,6 @@
 ///
 /// Uses the SDK's `wallet::encrypt_wallet` / `decrypt_wallet` with a
 /// device-specific key derived from machine ID + data directory.
-
 use sha2::{Sha256, Digest};
 use std::fs;
 use std::path::PathBuf;

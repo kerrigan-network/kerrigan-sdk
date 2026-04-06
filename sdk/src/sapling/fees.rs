@@ -6,7 +6,6 @@
 /// ```
 ///
 /// All values in satoshis (1 KRGN = 100,000,000 sat).
-
 /// Base fee for any Sapling transaction (0.0002 KRGN).
 pub const SAPLING_BASE_FEE: u64 = 20_000;
 

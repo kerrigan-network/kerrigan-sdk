@@ -1,9 +1,3 @@
-#![allow(
-    clippy::empty_line_after_doc_comments,
-    clippy::manual_div_ceil,
-    clippy::literal_string_with_formatting_args,
-)]
-
 /// Kerrigan Bridge — shield sync server for light wallets.
 ///
 /// Connects to a Kerrigan full node via JSON-RPC, scans for Sapling
@@ -11,7 +5,6 @@
 ///
 /// Usage:
 ///   kerrigan-bridge --rpc-url http://127.0.0.1:9998 --rpc-user rpc --rpc-pass rpc
-
 mod api;
 mod config;
 mod index;
@@ -121,7 +114,8 @@ async fn main() {
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("  {} Cannot bind to {addr}: {e}", "\x1b[31mError:\x1b[0m");
+            let tag = "\x1b[31mError:\x1b[0m";
+            eprintln!("  {tag} Cannot bind to {addr}: {e}");
             eprintln!("  Is another process using port {}?", config.port);
             std::process::exit(1);
         }

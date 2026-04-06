@@ -1,15 +1,7 @@
-#![allow(
-    clippy::empty_line_after_doc_comments,
-    clippy::if_same_then_else,
-    clippy::manual_div_ceil,
-    clippy::literal_string_with_formatting_args,
-)]
-
 /// Kerrigan Network light wallet CLI.
 ///
 /// "My stare alone would reduce you to ashes."
 ///   — Sarah Kerrigan, Queen of Blades
-
 #[allow(dead_code)]
 mod network;
 mod sapling_params;
@@ -630,7 +622,7 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
             .max(1);
-        let total_pages = (history.len() + page_size - 1) / page_size;
+        let total_pages = history.len().div_ceil(page_size);
         let page = page.min(total_pages);
         let start = (page - 1) * page_size;
         let end = (start + page_size).min(history.len());
@@ -689,7 +681,7 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
         let confs_padded = format!("{:>7}", confs);
 
         let date = entry.timestamp
-            .map(|ts| format_timestamp(ts))
+            .map(format_timestamp)
             .unwrap_or_else(|| "—".into());
 
         println!("  {}  {}  {}  {}",
@@ -717,7 +709,7 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
     println!();
 
     // Pagination hint
-    let total_pages = (history.len() + page_size - 1) / page_size;
+    let total_pages = history.len().div_ceil(page_size);
     if total_pages > 1 && args.first().map(|s| s.as_str()) != Some("all") {
         println!("  {} {} or {}",
             term::dim("Tip:"),
@@ -799,6 +791,7 @@ fn format_timestamp(ts: u64) -> String {
     format!("{y}-{m:02}-{d:02}")
 }
 
+#[allow(clippy::manual_is_multiple_of)]
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }

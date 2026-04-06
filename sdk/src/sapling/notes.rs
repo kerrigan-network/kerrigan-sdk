@@ -3,7 +3,6 @@
 /// Processes raw Sapling transaction bytes: parses the bundle, attempts to
 /// decrypt outputs with a viewing key, updates the commitment tree and
 /// witnesses, and derives nullifiers for spent notes.
-
 use std::io::Cursor;
 
 use sapling::note::Rseed;
@@ -180,7 +179,7 @@ pub fn process_sapling_transaction(
     tx_bytes: &[u8],
     extfvk: &ExtendedFullViewingKey,
     nk: &NullifierDerivingKey,
-    existing_witnesses: &mut Vec<SpendableNote>,
+    existing_witnesses: &mut [SpendableNote],
     block_height: u32,
 ) -> Result<TxProcessResult, SaplingNoteError> {
     // Parse the transaction

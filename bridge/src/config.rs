@@ -1,5 +1,4 @@
 /// Bridge configuration — CLI args and defaults.
-
 use clap::Parser;
 
 #[derive(Parser, Clone, Debug)]

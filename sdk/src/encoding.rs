@@ -1,5 +1,4 @@
 /// From-scratch encoding utilities: hex, Base58Check, and Bitcoin varint.
-
 use sha2::{Sha256, Digest};
 use std::fmt;
 
@@ -46,7 +45,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 
 /// Decode a hex string to bytes. Accepts both upper and lowercase.
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, EncodingError> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(EncodingError::InvalidHex("odd length".into()));
     }
     let bytes = s.as_bytes();

@@ -14,7 +14,6 @@
 /// | Transparent output  | 34      | value(8) + scriptPubKey(25) + varint(1)   |
 ///
 /// The default fee rate is 10 sat/byte ([`DEFAULT_FEE_PER_BYTE`]).
-
 use crate::params;
 use crate::script::ScriptType;
 

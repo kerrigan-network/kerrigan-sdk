@@ -11,7 +11,6 @@
 /// | [`fees`] | Sapling fee calculation (Kerrigan formula) |
 /// | [`prover`] | Proving parameter types and SHA-256 verification |
 /// | [`builder`] | Sapling transaction construction and signing |
-
 pub mod network;
 pub mod keys;
 pub mod tree;

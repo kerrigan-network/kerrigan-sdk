@@ -1,5 +1,4 @@
 /// HTTP API — axum endpoints for the bridge.
-
 use std::sync::Arc;
 
 use axum::extract::{Query, State};

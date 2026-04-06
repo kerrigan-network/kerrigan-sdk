@@ -1,5 +1,4 @@
 /// Address generation, key management, and validation for Kerrigan Network.
-
 use crate::bip32::{ExtendedPrivKey, hash160};
 use crate::encoding::{base58check_encode, base58check_decode, EncodingError};
 use crate::params;

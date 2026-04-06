@@ -2,7 +2,6 @@
 ///
 /// Uses true-color ANSI escapes. The brand color is Kerrigan purple (#7C3AED).
 /// Falls back gracefully on terminals without color support (NO_COLOR env var).
-
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -115,8 +114,7 @@ impl Spinner {
                 };
 
                 if use_color {
-                    eprint!("\r{PURPLE}{spinner_char}{RESET} {msg}{}{PURPLE_BOLD}{pct_display}{RESET}  ",
-                        if pct_display.is_empty() { "" } else { "" });
+                    eprint!("\r{PURPLE}{spinner_char}{RESET} {msg}{PURPLE_BOLD}{pct_display}{RESET}  ");
                 } else {
                     eprint!("\r{spinner_char} {msg}{pct_display}  ");
                 }

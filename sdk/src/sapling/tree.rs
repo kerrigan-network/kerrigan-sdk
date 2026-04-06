@@ -2,7 +2,6 @@
 ///
 /// Wraps `incrementalmerkletree` types for the Kerrigan Sapling tree (depth 32).
 /// Provides hex serialization for persistence and root extraction for verification.
-
 use std::io::Cursor;
 
 use incrementalmerkletree::frontier::CommitmentTree;

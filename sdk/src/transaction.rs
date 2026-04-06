@@ -15,7 +15,6 @@
 ///
 /// Each layer is independently testable. Future transaction versions (e.g., v3 Sapling)
 /// can add new sighash algorithms or signing flows without modifying the serialization core.
-
 use secp256k1::{Secp256k1, SecretKey, PublicKey, Message};
 use serde::{Serialize, Deserialize};
 use std::fmt;

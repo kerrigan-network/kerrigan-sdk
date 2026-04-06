@@ -1,6 +1,5 @@
 /// BIP39 mnemonic generation and seed derivation — from scratch.
 /// No external BIP39 crate: wordlist, entropy, PBKDF2-HMAC-SHA512 all implemented here.
-
 use hmac::{Hmac, Mac};
 use sha2::{Sha256, Sha512, Digest};
 use zeroize::Zeroize;
@@ -35,6 +34,7 @@ impl std::error::Error for Bip39Error {}
 // BIP39 English wordlist (2048 words)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::large_const_arrays)]
 const WORDLIST: [&str; 2048] = include!("bip39_wordlist.rs");
 
 /// Look up a word's index in the wordlist (0-2047), or None if not found.
@@ -128,10 +128,8 @@ pub fn validate_mnemonic(mnemonic: &str) -> Result<(), Bip39Error> {
     for (i, &idx) in indices.iter().enumerate() {
         for j in 0..11 {
             let bit_pos = i * 11 + j;
-            if bit_pos < ent_bits {
-                if (idx >> (10 - j)) & 1 == 1 {
-                    entropy[bit_pos / 8] |= 1 << (7 - (bit_pos % 8));
-                }
+            if bit_pos < ent_bits && (idx >> (10 - j)) & 1 == 1 {
+                entropy[bit_pos / 8] |= 1 << (7 - (bit_pos % 8));
             }
         }
     }
@@ -165,7 +163,7 @@ pub fn validate_mnemonic(mnemonic: &str) -> Result<(), Bip39Error> {
 /// PBKDF2-HMAC-SHA512 with the given password, salt, iteration count, and output length.
 pub fn pbkdf2_hmac_sha512(password: &[u8], salt: &[u8], iterations: u32, dk_len: usize) -> Vec<u8> {
     let hlen = 64; // SHA-512 output length
-    let blocks_needed = (dk_len + hlen - 1) / hlen;
+    let blocks_needed = dk_len.div_ceil(hlen);
     let mut dk = Vec::with_capacity(dk_len);
 
     for block_idx in 1..=blocks_needed as u32 {

@@ -1,5 +1,4 @@
 /// JSON-RPC 1.0 client for the Kerrigan full node.
-
 use serde_json::{json, Value};
 
 /// Kerrigan node RPC client with connection pooling.
@@ -113,7 +112,7 @@ impl RpcClient {
 fn base64_encode(input: String) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
 
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;

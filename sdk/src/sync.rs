@@ -12,7 +12,6 @@
 /// }
 /// let utxos = state.derive_utxos();
 /// ```
-
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 

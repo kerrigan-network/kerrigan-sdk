@@ -2,7 +2,6 @@
 ///
 /// The parameters are ~50MB total (output: ~3.5MB, spend: ~47MB).
 /// Downloaded on first use and cached in the wallet data directory.
-
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
