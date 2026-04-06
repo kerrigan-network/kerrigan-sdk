@@ -866,12 +866,17 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
 fn cmd_sync() -> Result<(), WalletError> {
     let mut wallet_data = crate::storage::load_wallet()?;
 
-    // Force full resync — clear all cached state
+    // Force full resync — clear all cached state (transparent + shield)
     wallet_data.processed_txids.clear();
     wallet_data.utxos.clear();
     wallet_data.history.clear();
     wallet_data.sync_state = None;
     wallet_data.last_sync_height = 0;
+
+    // Reset shield state — rebuild tree from activation
+    wallet_data.commitment_tree = None;
+    wallet_data.unspent_notes.clear();
+    wallet_data.sapling_last_block = 0;
 
     println!();
     let result = sync_with_spinner(&mut wallet_data)?;
