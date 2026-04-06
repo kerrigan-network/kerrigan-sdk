@@ -24,9 +24,12 @@ getrandom = "0.2"
 
 # Sapling shielded transactions
 sapling-crypto = "0.5"
-zcash_primitives = "0.26"
+zcash_primitives = { version = "0.26", features = ["transparent-inputs", "non-standard-fees"] }
+zcash_transparent = "0.6"
 zcash_protocol = "0.7"
 zcash_keys = { version = "0.12", features = ["sapling"] }
 zcash_note_encryption = "0.4"
+zcash_proofs = "0.26"
 incrementalmerkletree = "0.8"
 jubjub = "0.10"
+rand_core = { version = "0.6", features = ["std"] }
