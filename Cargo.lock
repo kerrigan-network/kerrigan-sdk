@@ -789,6 +789,8 @@ version = "0.1.0"
 dependencies = [
  "getrandom",
  "hmac 0.12.1",
+ "incrementalmerkletree",
+ "jubjub",
  "ripemd 0.1.3",
  "sapling-crypto",
  "secp256k1",
@@ -796,6 +798,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "zcash_keys",
+ "zcash_note_encryption",
  "zcash_primitives",
  "zcash_protocol",
  "zeroize",

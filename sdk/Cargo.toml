@@ -27,3 +27,6 @@ sapling-crypto = "0.5"
 zcash_primitives = "0.26"
 zcash_protocol = "0.7"
 zcash_keys = { version = "0.12", features = ["sapling"] }
+zcash_note_encryption = "0.4"
+incrementalmerkletree = "0.8"
+jubjub = "0.10"
