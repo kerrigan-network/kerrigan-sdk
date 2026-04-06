@@ -29,7 +29,7 @@ pub const BLOCK_TIME_SECONDS: u32 = 120;
 pub const EXPLORER_URL: &str = "https://explorer.kerrigan.network";
 
 // -- Shield bridge --
-pub const BRIDGE_URL: &str = "https://bridge.kerrigan.network";
+pub const BRIDGE_URL: &str = "https://kerrigan-bridge.jskitty.cat";
 
 // -- Sapling parameter download --
 pub const SAPLING_OUTPUT_PARAMS_URL: &str = "https://download.z.cash/downloads/sapling-output.params";
