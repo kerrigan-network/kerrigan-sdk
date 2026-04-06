@@ -85,21 +85,3 @@ pub fn apply_shield_data(
     Ok(SaplingSyncResult { new_notes: result.new_notes.len(), spent: spent_count })
 }
 
-/// Full sync: fetch + apply in one call (for non-parallel use).
-#[allow(dead_code)]
-pub fn sync_shielded(
-    wallet: &mut WalletData,
-    on_progress: impl Fn(&str),
-) -> Result<SaplingSyncResult, WalletError> {
-    on_progress("Fetching shield data...");
-    let start_block = if wallet.sapling_last_block > 0 {
-        wallet.sapling_last_block + 1
-    } else {
-        kerrigan_sdk::sapling::network::SAPLING_ACTIVATION_HEIGHT
-    };
-
-    let stream_bytes = fetch_shield_stream(start_block)?;
-
-    on_progress("Processing shield blocks...");
-    apply_shield_data(wallet, &stream_bytes)
-}

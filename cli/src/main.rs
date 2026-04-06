@@ -295,37 +295,29 @@ fn cmd_balance() -> Result<(), WalletError> {
 
     let public_bal = wallet_data.balance_display();
     let private_bal = wallet_data.shielded_balance_display();
+    let utxo_count = wallet_data.utxos.len();
+    let note_count = wallet_data.unspent_notes.len();
 
     println!();
-    println!("  {} {}",
+    println!("  {} {} KRGN {}",
         term::dim("Public: "),
-        term::green_bold(&format!("{public_bal} KRGN")),
+        term::green_bold(&public_bal),
+        term::dim(&format!("({utxo_count} UTXO{})", if utxo_count == 1 { "" } else { "s" })),
     );
-    println!("  {} {}",
+    println!("  {} {} KRGN {}",
         term::dim("Private:"),
-        term::green_bold(&format!("{private_bal} KRGN")),
+        term::green_bold(&private_bal),
+        term::dim(&format!("({note_count} note{})", if note_count == 1 { "" } else { "s" })),
     );
 
     let total = wallet_data.balance().saturating_add(wallet_data.shielded_balance());
     if total != wallet_data.balance() && total != wallet_data.shielded_balance() {
-        println!("  {} {}",
+        println!("  {} {} KRGN",
             term::dim("Total:  "),
-            term::bold(&format!("{} KRGN", wallet::format_krgn(total))),
+            term::bold(&wallet::format_krgn(total)),
         );
     }
 
-    if wallet_data.utxos.len() > 1 {
-        println!("  {} {} UTXOs",
-            term::dim("Coins: "),
-            wallet_data.utxos.len(),
-        );
-    }
-    if !wallet_data.unspent_notes.is_empty() {
-        println!("  {} {} notes",
-            term::dim("Notes: "),
-            wallet_data.unspent_notes.len(),
-        );
-    }
     println!();
 
     Ok(())
