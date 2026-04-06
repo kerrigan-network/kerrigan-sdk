@@ -273,10 +273,9 @@ pub fn build_unshield(
     }
 
     // Build the sapling bundle (proofs + signatures)
-    let (auth_bundle, sighash, bundle_nullifiers, bundle_fee) =
+    let (auth_bundle, sighash, _, _) =
         build_sapling_bundle_with_sighash(
             sapling_builder, extsk, prover, &nullifiers,
-            // For unshield sighash: transparent output to include
             Some((to_transparent, amount)),
             fee,
         )?;
@@ -315,6 +314,7 @@ fn build_and_sign_sapling_only(
 }
 
 /// Core bundle builder: proofs → Kerrigan sighash → signatures.
+#[allow(clippy::type_complexity)]
 fn build_sapling_bundle_with_sighash(
     sapling_builder: sapling::builder::Builder,
     extsk: &ExtendedSpendingKey,
@@ -332,7 +332,7 @@ fn build_sapling_bundle_with_sighash(
 
     // Step 1: Build unauthorized bundle
     let (unauth_bundle, _metadata) = sapling_builder
-        .build::<SpendParameters, OutputParameters, OsRng, i64>(&[extsk.clone()], OsRng)
+        .build::<SpendParameters, OutputParameters, OsRng, i64>(std::slice::from_ref(extsk), OsRng)
         .map_err(|e| SaplingBuilderError::Build(format!("build: {e:?}")))?
         .ok_or(SaplingBuilderError::Build("empty bundle".into()))?;
 
