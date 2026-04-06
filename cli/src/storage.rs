@@ -103,6 +103,9 @@ pub fn save_wallet(data: &WalletData) -> Result<(), WalletError> {
 }
 
 /// Load and decrypt the wallet from disk.
+///
+/// Automatically upgrades old wallets by deriving Sapling shielded keys
+/// from the existing seed (if not already present).
 pub fn load_wallet() -> Result<WalletData, WalletError> {
     let path = wallet_path();
     if !path.exists() {
@@ -115,5 +118,29 @@ pub fn load_wallet() -> Result<WalletData, WalletError> {
         .map_err(|e| WalletError::Other(format!("Corrupt wallet file: {e}")))?;
 
     let key = device_key()?;
-    wallet::decrypt_wallet(data, &key)
+    let mut data = wallet::decrypt_wallet(data, &key)?;
+
+    // Auto-migrate: derive Sapling keys if missing (pre-shield wallet)
+    if data.sapling_address.is_none() {
+        migrate_add_sapling_keys(&mut data)?;
+        save_wallet(&data)?;
+    }
+
+    Ok(data)
+}
+
+/// Derive Sapling shielded keys from the existing BIP39 seed.
+fn migrate_add_sapling_keys(data: &mut WalletData) -> Result<(), WalletError> {
+    use kerrigan_sdk::sapling::keys;
+
+    let extsk = keys::default_spending_key(&data.seed)
+        .map_err(|e| WalletError::Other(format!("sapling key derivation: {e}")))?;
+    let extfvk = keys::full_viewing_key(&extsk);
+    let addr = keys::default_payment_address(&extfvk);
+
+    data.sapling_extsk = Some(keys::encode_extsk(&extsk));
+    data.sapling_extfvk = Some(keys::encode_extfvk(&extfvk));
+    data.sapling_address = Some(keys::encode_payment_address(&addr));
+
+    Ok(())
 }
