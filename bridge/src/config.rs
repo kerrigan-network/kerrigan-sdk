@@ -21,6 +21,10 @@ pub struct Config {
     #[arg(long, env = "KERRIGAN_BRIDGE_PORT", default_value_t = 3000)]
     pub port: u16,
 
+    /// ZMQ endpoint for block notifications (e.g. tcp://127.0.0.1:28332)
+    #[arg(long, env = "KERRIGAN_ZMQ_URL", default_value = "tcp://127.0.0.1:28332")]
+    pub zmq_url: String,
+
     /// Start scanning from this block height (0 = Sapling activation)
     #[arg(long, default_value_t = 500)]
     pub start_height: u32,

@@ -92,6 +92,10 @@ async fn main() {
         index_path: config.index_path.clone(),
     });
 
+    // Clone for background task before router takes ownership
+    let bg_state = state.clone();
+    let bg_config = config.clone();
+
     // Routes
     let app = Router::new()
         .route("/getshielddata", get(api::get_shield_data))
@@ -100,10 +104,74 @@ async fn main() {
         .route("/sendrawtransaction", post(api::send_raw_transaction))
         .with_state(state);
 
+    // Background block scanner — subscribes to ZMQ hashblock notifications
+    tokio::spawn(async move {
+        eprintln!("  [zmq] Subscribing to {}", bg_config.zmq_url);
+
+        let mut subscriber = match bitcoincore_zmq::subscribe_async(&[&bg_config.zmq_url]) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  [zmq] Failed to subscribe: {e} — falling back to no live updates");
+                return;
+            }
+        };
+
+        use futures::StreamExt;
+        while let Some(msg) = subscriber.next().await {
+            let msg = match msg {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("  [zmq] Error: {e}");
+                    continue;
+                }
+            };
+
+            // We only care about hashblock notifications
+            if !matches!(msg, bitcoincore_zmq::Message::HashBlock(_, _)) {
+                continue;
+            }
+
+            eprintln!("  [zmq] New block notification");
+
+            // Scan new blocks since our last indexed height
+            let last_scanned = bg_state.index.read().await.last_scanned;
+
+            let rpc_url = bg_state.rpc.url().to_string();
+            let rpc_user = bg_state.rpc.user().to_string();
+            let rpc_pass = bg_state.rpc.pass().to_string();
+
+            let scan_from = last_scanned + 1;
+            let scan_result = tokio::task::spawn_blocking(move || {
+                let rpc = RpcClient::new(&rpc_url, &rpc_user, &rpc_pass);
+                let chain_height = rpc.get_block_count()
+                    .map_err(|e| scanner::ScanError::Rpc(format!("{e}")))?;
+                let blocks = scanner::scan_range(&rpc, scan_from, chain_height, |_, _| {})?;
+                Ok::<(Vec<_>, u32), scanner::ScanError>((blocks, chain_height))
+            }).await;
+
+            if let Ok(Ok((blocks, chain_height))) = scan_result {
+                let mut index = bg_state.index.write().await;
+                let new_count = blocks.len();
+                for block in &blocks {
+                    index.add_shield_block(block.height);
+                }
+                index.last_scanned = chain_height;
+                let _ = index.save(&bg_config.index_path);
+
+                if new_count > 0 {
+                    eprintln!("  [zmq] Indexed {new_count} new shield block(s) at height {chain_height}");
+                }
+            }
+        }
+
+        eprintln!("  [zmq] Subscriber ended");
+    });
+
     // Serve
     let addr = format!("0.0.0.0:{}", config.port);
     println!();
     println!("  Bridge listening on http://{addr}");
+    println!("  Scanning for new blocks every 30s");
     println!("  Endpoints:");
     println!("    GET  /getshielddata?startBlock=N");
     println!("    GET  /getblockcount");
