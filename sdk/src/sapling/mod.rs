@@ -19,3 +19,4 @@ pub mod notes;
 pub mod fees;
 pub mod prover;
 pub mod builder;
+pub mod sync;
