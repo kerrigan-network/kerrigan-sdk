@@ -112,9 +112,14 @@ async fn main() {
     println!("    POST /sendrawtransaction");
     println!();
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("failed to bind");
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("  {} Cannot bind to {addr}: {e}", "\x1b[31mError:\x1b[0m");
+            eprintln!("  Is another process using port {}?", config.port);
+            std::process::exit(1);
+        }
+    };
 
     axum::serve(listener, app)
         .await

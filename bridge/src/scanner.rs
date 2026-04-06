@@ -1,7 +1,7 @@
 /// Block scanner — extracts compact Sapling data from the Kerrigan node.
 ///
-/// Scans blocks via RPC, detects Sapling transactions, and extracts only
-/// the fields a light wallet needs (nullifiers, cmu, epk, enc_ciphertext).
+/// Chains through blocks via `nextblockhash` (one RPC call per block instead
+/// of two). Skips blocks that return RPC errors instead of aborting the scan.
 
 use kerrigan_sdk::encoding;
 use kerrigan_sdk::sapling::sync::{CompactSaplingOutput, CompactTransaction, RawShieldBlock, BlockEntry};
@@ -14,19 +14,10 @@ use crate::rpc::RpcClient;
 // Block scanning
 // ---------------------------------------------------------------------------
 
-/// Scan a single block at the given height for Sapling transactions.
+/// Scan a single block by hash. Returns the block JSON and optional shield data.
 ///
-/// Returns `None` if the block has no Sapling data, `Some(block)` otherwise.
-pub fn scan_block(rpc: &RpcClient, height: u32) -> Result<Option<RawShieldBlock>, ScanError> {
-    let hash = rpc
-        .get_block_hash(height)
-        .map_err(|e| ScanError::Rpc(format!("getblockhash({height}): {e}")))?;
-
-    // Verbosity 2 = full decoded transactions
-    let block_json = rpc
-        .get_block(&hash, 2)
-        .map_err(|e| ScanError::Rpc(format!("getblock({hash}): {e}")))?;
-
+/// Uses the block JSON directly (caller already has the hash from chaining).
+pub fn scan_block_json(block_json: &Value, height: u32) -> Result<Option<RawShieldBlock>, ScanError> {
     let txs = block_json
         .get("tx")
         .and_then(|t| t.as_array())
@@ -47,8 +38,25 @@ pub fn scan_block(rpc: &RpcClient, height: u32) -> Result<Option<RawShieldBlock>
     }
 }
 
-/// Scan a range of blocks, returning only those with Sapling data.
+/// Scan a single block by height (standalone, uses 2 RPC calls).
+pub fn scan_block(rpc: &RpcClient, height: u32) -> Result<Option<RawShieldBlock>, ScanError> {
+    let hash = rpc
+        .get_block_hash(height)
+        .map_err(|e| ScanError::Rpc(format!("getblockhash({height}): {e}")))?;
+
+    let block_json = rpc
+        .get_block(&hash, 2)
+        .map_err(|e| ScanError::Rpc(format!("getblock({hash}): {e}")))?;
+
+    scan_block_json(&block_json, height)
+}
+
+/// Scan a range of blocks by chaining via `nextblockhash`.
 ///
+/// Only calls `getblockhash` once (for the first block), then follows the
+/// chain via `nextblockhash` — one RPC call per block instead of two.
+///
+/// Skips blocks that return RPC errors and continues scanning.
 /// Calls `on_progress(current, total)` after each block.
 pub fn scan_range(
     rpc: &RpcClient,
@@ -58,16 +66,57 @@ pub fn scan_range(
 ) -> Result<Vec<RawShieldBlock>, ScanError> {
     let mut shield_blocks = Vec::new();
     let total = end.saturating_sub(start) + 1;
+    let mut errors = 0u32;
+
+    // Get the first block hash
+    let mut current_hash = rpc
+        .get_block_hash(start)
+        .map_err(|e| ScanError::Rpc(format!("getblockhash({start}): {e}")))?;
 
     for height in start..=end {
         on_progress(height - start, total);
 
-        if let Some(block) = scan_block(rpc, height)? {
-            shield_blocks.push(block);
+        // Fetch block (verbosity 2 = full decoded txs)
+        let block_json = match rpc.get_block(&current_hash, 2) {
+            Ok(json) => json,
+            Err(e) => {
+                eprintln!("\n  Warning: block {height} ({current_hash}): {e} — skipping");
+                errors += 1;
+
+                // Try to recover by fetching the next hash directly
+                match rpc.get_block_hash(height + 1) {
+                    Ok(hash) => {
+                        current_hash = hash;
+                        continue;
+                    }
+                    Err(_) => break, // Can't recover — stop scanning
+                }
+            }
+        };
+
+        // Extract shield data
+        match scan_block_json(&block_json, height) {
+            Ok(Some(block)) => shield_blocks.push(block),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("\n  Warning: block {height} parse error: {e} — skipping");
+                errors += 1;
+            }
+        }
+
+        // Chain to next block via nextblockhash
+        match block_json.get("nextblockhash").and_then(|v| v.as_str()) {
+            Some(next) => current_hash = next.to_string(),
+            None => break, // We've reached the chain tip
         }
     }
 
     on_progress(total, total);
+
+    if errors > 0 {
+        eprintln!("\n  Completed with {errors} skipped block(s)");
+    }
+
     Ok(shield_blocks)
 }
 

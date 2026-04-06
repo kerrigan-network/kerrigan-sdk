@@ -14,7 +14,7 @@ pub struct RpcClient {
 impl RpcClient {
     pub fn new(url: &str, user: &str, pass: &str) -> Self {
         let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(120))
             .build();
         let auth = base64_encode(format!("{user}:{pass}"));
         Self {
