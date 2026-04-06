@@ -391,17 +391,38 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         }
         (false, true) => {
             // Public → Private (shielding)
-            let amount = wallet::parse_krgn(amount_str)?;
+            let amount = if is_max {
+                let fee = kerrigan_sdk::sapling::fees::shield_fee(1);
+                wallet_data.balance().saturating_sub(fee)
+            } else {
+                wallet::parse_krgn(amount_str)?
+            };
             send_shield(&mut wallet_data, to_address, amount)
         }
         (true, false) => {
             // Private → Public (unshielding)
-            let amount = wallet::parse_krgn(amount_str)?;
+            let amount = if is_max {
+                // Max: all notes → transparent output, no sapling change
+                let fee = kerrigan_sdk::sapling::fees::sapling_fee(
+                    wallet_data.unspent_notes.len(), 0
+                );
+                wallet_data.shielded_balance().saturating_sub(fee)
+            } else {
+                wallet::parse_krgn(amount_str)?
+            };
             send_unshield(&mut wallet_data, to_address, amount)
         }
         (true, true) => {
             // Private → Private (shield-to-shield)
-            let amount = wallet::parse_krgn(amount_str)?;
+            let amount = if is_max {
+                // Max: all notes → 1 output (no change)
+                let fee = kerrigan_sdk::sapling::fees::sapling_fee(
+                    wallet_data.unspent_notes.len(), 1
+                );
+                wallet_data.shielded_balance().saturating_sub(fee)
+            } else {
+                wallet::parse_krgn(amount_str)?
+            };
             send_sapling(&mut wallet_data, to_address, amount, _memo)
         }
     }
