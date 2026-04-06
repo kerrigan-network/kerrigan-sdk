@@ -19,8 +19,10 @@ use zcash_primitives::zip32::Scope;
 use zcash_protocol::memo::Memo;
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::address::TransparentAddress;
+use zcash_transparent::bundle::{OutPoint, TxOut};
 
 use crate::encoding;
+use crate::transaction::Utxo;
 use super::fees;
 use super::network::KerriganMainNetwork;
 use super::notes::SpendableNote;
@@ -139,6 +141,109 @@ pub fn build_sapling_send(
 
     // Build and sign
     finalize(builder, extsk, fee, amount, nullifiers, prover)
+}
+
+// ---------------------------------------------------------------------------
+// Shielding (transparent → sapling)
+// ---------------------------------------------------------------------------
+
+/// Build a shielding transaction.
+///
+/// Spends transparent UTXOs and sends to a shielded `ks1...` address.
+/// Transparent change goes back to the sender's transparent address.
+pub fn build_shield(
+    utxos: &[Utxo],
+    pubkey: &[u8],
+    from_address: &str,
+    to_shielded: &PaymentAddress,
+    amount: u64,
+    block_height: u32,
+    prover: &SaplingProver,
+) -> Result<SaplingTxResult, SaplingBuilderError> {
+    if utxos.is_empty() {
+        return Err(SaplingBuilderError::NoNotes);
+    }
+
+    // Convert secp256k1 key for transparent signing
+    let secp_pubkey = secp256k1::PublicKey::from_slice(pubkey)
+        .map_err(|e| SaplingBuilderError::Build(format!("invalid pubkey: {e}")))?;
+
+    // Initialize builder (no sapling anchor needed — no sapling spends)
+    let mut builder = Builder::new(
+        KerriganMainNetwork,
+        BlockHeight::from_u32(block_height),
+        BuildConfig::Standard {
+            sapling_anchor: None,
+            orchard_anchor: None,
+        },
+    );
+
+    // Select UTXOs and add transparent inputs
+    let mut total = 0u64;
+    let fee = fees::shield_fee(1); // 1 sapling output
+
+    for utxo in utxos {
+        // Convert txid from display order (big-endian) to internal order (little-endian)
+        let txid_decoded = encoding::hex_decode(&utxo.txid)
+            .map_err(|e| SaplingBuilderError::Build(format!("txid hex: {e}")))?;
+        if txid_decoded.len() != 32 {
+            return Err(SaplingBuilderError::Build("txid must be 32 bytes".into()));
+        }
+        let mut txid_bytes = [0u8; 32];
+        for (i, b) in txid_decoded.iter().enumerate() {
+            txid_bytes[31 - i] = *b;
+        }
+
+        let outpoint = OutPoint::new(txid_bytes, utxo.vout);
+
+        // Use the UTXO's scriptPubKey directly
+        let script_bytes = encoding::hex_decode(&utxo.script_pubkey)
+            .map_err(|e| SaplingBuilderError::Build(format!("script hex: {e}")))?;
+        let script = zcash_transparent::address::Script(
+            zcash_script::script::Code(script_bytes),
+        );
+        let coin = TxOut::new(zatoshis(utxo.amount)?, script);
+
+        builder
+            .add_transparent_input(secp_pubkey, outpoint, coin)
+            .map_err(|e| SaplingBuilderError::Build(format!("add transparent input: {e:?}")))?;
+
+        total += utxo.amount;
+
+        if total >= amount + fee {
+            break;
+        }
+    }
+
+    if total < amount + fee {
+        return Err(SaplingBuilderError::InsufficientBalance {
+            have: total,
+            need: amount + fee,
+        });
+    }
+
+    // Add shielded output
+    builder
+        .add_sapling_output::<FeeRule>(None, *to_shielded, zatoshis(amount)?, MemoBytes::empty())
+        .map_err(|e| SaplingBuilderError::Build(format!("add sapling output: {e:?}")))?;
+
+    // Transparent change (if any)
+    let change = total - amount - fee;
+    if change > 0 {
+        let change_pubkey_hash = crate::keys::address_to_pubkey_hash(from_address)
+            .map_err(|e| SaplingBuilderError::Build(format!("change address: {e}")))?;
+        let change_addr = TransparentAddress::PublicKeyHash(change_pubkey_hash);
+        builder
+            .add_transparent_output(&change_addr, zatoshis(change)?)
+            .map_err(|e| SaplingBuilderError::Build(format!("add transparent change: {e:?}")))?;
+    }
+
+    // Build — shielding tx has no sapling spends, so we pass a dummy extsk.
+    // The builder only uses it for sapling spend authorization (which we don't have).
+    let extsk = super::keys::default_spending_key(&[0u8; 64])
+        .map_err(|e| SaplingBuilderError::Build(format!("dummy extsk: {e}")))?;
+
+    finalize(builder, &extsk, fee, amount, Vec::new(), prover)
 }
 
 // ---------------------------------------------------------------------------

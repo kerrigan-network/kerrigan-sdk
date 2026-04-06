@@ -26,6 +26,7 @@ getrandom = "0.2"
 sapling-crypto = "0.5"
 zcash_primitives = { version = "0.26", features = ["transparent-inputs", "non-standard-fees"] }
 zcash_transparent = "0.6"
+zcash_script = "0.4"
 zcash_protocol = "0.7"
 zcash_keys = { version = "0.12", features = ["sapling"] }
 zcash_note_encryption = "0.4"

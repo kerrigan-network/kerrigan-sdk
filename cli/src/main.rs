@@ -390,8 +390,8 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         }
         (false, true) => {
             // Public → Private (shielding)
-            // TODO: implement shielding flow
-            Err(WalletError::Other("Shielding (public → private) not yet implemented".into()))
+            let amount = wallet::parse_krgn(amount_str)?;
+            send_shield(&mut wallet_data, to_address, amount)
         }
         (true, false) => {
             // Private → Public (unshielding)
@@ -466,6 +466,125 @@ fn send_transparent(
     }
 
     Ok(())
+}
+
+/// Shielding send — transparent UTXOs → sapling output.
+fn send_shield(
+    wallet_data: &mut WalletData,
+    to_address: &str,
+    amount: u64,
+) -> Result<(), WalletError> {
+    // Decode shielded destination
+    let to_shielded = kerrigan_sdk::sapling::keys::decode_payment_address(to_address)
+        .map_err(|e| WalletError::Transaction(format!("invalid shielded address: {e}")))?;
+
+    // Derive keypair for transparent signing
+    let kp = wallet_data.derive_keypair()?;
+
+    // Check we have enough transparent balance
+    let fee = kerrigan_sdk::sapling::fees::shield_fee(1);
+    if wallet_data.balance() < amount + fee {
+        return Err(WalletError::Transaction(format!(
+            "insufficient public balance: have {} sat, need {} sat (amount) + {} sat (fee)",
+            wallet_data.balance(), amount, fee
+        )));
+    }
+
+    // Get block height from bridge
+    let block_height = get_bridge_block_height()?;
+
+    // Show transaction details
+    println!();
+    term::header("Shield Transaction");
+    println!();
+    println!("   {}  {}", term::dim("Type:"), term::bold("Public → Private"));
+    println!("   {}  {}", term::dim("To:"), term::bold(&to_address[..20]));
+    println!("   {}  {} KRGN",
+        term::dim("Amount:"),
+        term::green_bold(&wallet::format_krgn(amount)),
+    );
+    println!("   {}  {} KRGN",
+        term::dim("Fee:"),
+        term::yellow(&wallet::format_krgn(fee)),
+    );
+    println!();
+
+    if !confirm(&format!("  Confirm shield? ({}/no): ", term::green("yes")), "yes") {
+        println!("  {}", term::dim("Cancelled."));
+        return Ok(());
+    }
+
+    // Download/load sapling params
+    let spinner = Spinner::start("Loading Sapling parameters");
+    let prover = crate::sapling_params::ensure_params(|msg| {
+        spinner.set_progress(0.0, Some(msg));
+    })?;
+    spinner.finish_with("Parameters loaded");
+
+    // Build the shielding transaction
+    let spinner = Spinner::start("Building shield transaction");
+    let result = kerrigan_sdk::sapling::builder::build_shield(
+        &wallet_data.utxos,
+        &kp.pubkey,
+        &wallet_data.address,
+        &to_shielded,
+        amount,
+        block_height,
+        &prover,
+    ).map_err(|e| WalletError::Transaction(format!("{e}")))?;
+    spinner.finish_with("Transaction built");
+
+    // Broadcast via bridge
+    let spinner = Spinner::start("Broadcasting");
+    let txid = broadcast_via_bridge(&result.tx_hex)?;
+    spinner.finish_with("Transaction sent!");
+
+    println!();
+    println!("  {} {}", term::dim("TXID:"), term::purple(&txid));
+    println!("  {} {} KRGN shielded",
+        term::dim("Shielded:"),
+        term::green_bold(&wallet::format_krgn(amount)),
+    );
+    println!();
+
+    // Update wallet state — remove spent UTXOs
+    // (We spent from transparent, so remove those UTXOs)
+    let spent_amount = amount + fee;
+    let mut remaining = spent_amount;
+    wallet_data.utxos.retain(|u| {
+        if remaining > 0 && u.amount <= remaining {
+            remaining -= u.amount;
+            false // remove this UTXO
+        } else {
+            true
+        }
+    });
+    crate::storage::save_wallet(wallet_data)?;
+
+    Ok(())
+}
+
+/// Get block height from the bridge.
+fn get_bridge_block_height() -> Result<u32, WalletError> {
+    let url = format!("{}/getblockcount", kerrigan_sdk::params::BRIDGE_URL);
+    let resp = ureq::get(&url)
+        .call()
+        .map_err(|e| WalletError::Other(format!("bridge getblockcount: {e}")))?;
+    let body = resp.into_string()
+        .map_err(|e| WalletError::Other(format!("read response: {e}")))?;
+    body.trim().parse::<u32>()
+        .map_err(|e| WalletError::Other(format!("parse block height: {e}")))
+}
+
+/// Broadcast a raw transaction via the bridge.
+fn broadcast_via_bridge(tx_hex: &str) -> Result<String, WalletError> {
+    let url = format!("{}/sendrawtransaction", kerrigan_sdk::params::BRIDGE_URL);
+    let resp = ureq::post(&url)
+        .send_string(tx_hex)
+        .map_err(|e| WalletError::Other(format!("broadcast failed: {e}")))?;
+    let txid = resp.into_string()
+        .map_err(|e| WalletError::Other(format!("read txid: {e}")))?;
+    Ok(txid.trim().to_string())
 }
 
 fn cmd_history(args: &[String]) -> Result<(), WalletError> {

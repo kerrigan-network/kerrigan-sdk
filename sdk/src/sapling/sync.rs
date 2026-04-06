@@ -404,19 +404,26 @@ pub fn process_shield_blocks(
                     )?;
                 }
                 BlockEntry::FullTx(tx_bytes) => {
-                    // Delegate to the full-tx path
-                    let result = notes::process_sapling_transaction(
+                    // Try the Zcash parser. Kerrigan uses PIVX tx format
+                    // (version 3, type 10) which the Zcash parser can't handle.
+                    // Skip unparseable txs — compact format is the preferred path.
+                    match notes::process_sapling_transaction(
                         &mut tree,
                         tx_bytes,
                         extfvk,
                         &nk,
                         &mut existing,
                         block.height,
-                    )
-                    .map_err(|e| ShieldSyncError::Note(e.to_string()))?;
-
-                    all_nullifiers.extend(result.spent_nullifiers);
-                    all_new.extend(result.new_notes);
+                    ) {
+                        Ok(result) => {
+                            all_nullifiers.extend(result.spent_nullifiers);
+                            all_new.extend(result.new_notes);
+                        }
+                        Err(_) => {
+                            // Can't parse this tx format — skip it.
+                            // TODO: implement PIVX/Kerrigan Sapling tx parser
+                        }
+                    }
                 }
             }
         }
