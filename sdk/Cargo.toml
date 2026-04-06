@@ -21,3 +21,9 @@ zeroize = { version = "1.8", features = ["derive"] }
 
 # Entropy
 getrandom = "0.2"
+
+# Sapling shielded transactions
+sapling-crypto = "0.5"
+zcash_primitives = "0.26"
+zcash_protocol = "0.7"
+zcash_keys = { version = "0.12", features = ["sapling"] }

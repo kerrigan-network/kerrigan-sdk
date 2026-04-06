@@ -27,3 +27,4 @@ pub mod fees;
 pub mod transaction;
 pub mod sync;
 pub mod wallet;
+pub mod sapling;
