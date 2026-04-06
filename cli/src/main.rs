@@ -525,6 +525,7 @@ fn send_shield(
     let spinner = Spinner::start("Building shield transaction");
     let result = kerrigan_sdk::sapling::builder::build_shield(
         &wallet_data.utxos,
+        &kp.privkey,
         &kp.pubkey,
         &wallet_data.address,
         &to_shielded,

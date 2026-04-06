@@ -153,6 +153,7 @@ pub fn build_sapling_send(
 /// Transparent change goes back to the sender's transparent address.
 pub fn build_shield(
     utxos: &[Utxo],
+    privkey: &[u8],
     pubkey: &[u8],
     from_address: &str,
     to_shielded: &PaymentAddress,
@@ -168,12 +169,13 @@ pub fn build_shield(
     let secp_pubkey = secp256k1::PublicKey::from_slice(pubkey)
         .map_err(|e| SaplingBuilderError::Build(format!("invalid pubkey: {e}")))?;
 
-    // Initialize builder (no sapling anchor needed — no sapling spends)
+    // Initialize builder with empty anchor (enables Sapling outputs
+    // even though we have no Sapling spends)
     let mut builder = Builder::new(
         KerriganMainNetwork,
         BlockHeight::from_u32(block_height),
         BuildConfig::Standard {
-            sapling_anchor: None,
+            sapling_anchor: Some(Anchor::empty_tree()),
             orchard_anchor: None,
         },
     );
@@ -238,12 +240,43 @@ pub fn build_shield(
             .map_err(|e| SaplingBuilderError::Build(format!("add transparent change: {e:?}")))?;
     }
 
-    // Build — shielding tx has no sapling spends, so we pass a dummy extsk.
-    // The builder only uses it for sapling spend authorization (which we don't have).
+    // Build with transparent signing set containing our private key
+    let secp_privkey = secp256k1::SecretKey::from_slice(privkey)
+        .map_err(|e| SaplingBuilderError::Build(format!("invalid privkey: {e}")))?;
+
+    let mut signing_set = TransparentSigningSet::new();
+    signing_set.add_key(secp_privkey);
+
+    // Dummy extsk — no sapling spends, only output proof needed
     let extsk = super::keys::default_spending_key(&[0u8; 64])
         .map_err(|e| SaplingBuilderError::Build(format!("dummy extsk: {e}")))?;
 
-    finalize(builder, &extsk, fee, amount, Vec::new(), prover)
+    let fee_rule = FeeRule::non_standard(zatoshis(fee)?);
+
+    let result = builder
+        .build(
+            &signing_set,
+            &[extsk],
+            &[],
+            OsRng,
+            &prover.1,
+            &prover.0,
+            &fee_rule,
+        )
+        .map_err(|e| SaplingBuilderError::Build(format!("{e:?}")))?;
+
+    let mut tx_bytes = Vec::new();
+    result
+        .transaction()
+        .write(&mut tx_bytes)
+        .map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
+
+    Ok(SaplingTxResult {
+        tx_hex: encoding::hex_encode(&tx_bytes),
+        nullifiers: Vec::new(),
+        amount,
+        fee,
+    })
 }
 
 // ---------------------------------------------------------------------------
