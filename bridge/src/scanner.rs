@@ -1,33 +1,63 @@
-/// Block scanner — extracts compact Sapling data from the Kerrigan node.
+/// Block scanner — extracts Sapling transactions from the Kerrigan node.
 ///
-/// Chains through blocks via `nextblockhash` (one RPC call per block instead
-/// of two). Skips blocks that return RPC errors instead of aborting the scan.
+/// Uses verbosity 1 (txid list) + getrawtransaction (raw hex) to avoid the
+/// node's broken JSON serialization of Sapling txs (MoneyRange bug in TxToUniv).
+/// Chains through blocks via `nextblockhash` (one getblock call per block).
 
 use kerrigan_sdk::encoding;
-use kerrigan_sdk::sapling::sync::{CompactSaplingOutput, CompactTransaction, RawShieldBlock, BlockEntry};
-use serde_json::Value;
-use zcash_note_encryption::ENC_CIPHERTEXT_SIZE;
+use kerrigan_sdk::sapling::sync::{RawShieldBlock, BlockEntry};
 
 use crate::rpc::RpcClient;
+
+/// Sapling transaction marker: version 3 (LE u16) + type 10 (LE u16).
+const SAPLING_TX_HEADER: [u8; 4] = [0x03, 0x00, 0x0a, 0x00];
 
 // ---------------------------------------------------------------------------
 // Block scanning
 // ---------------------------------------------------------------------------
 
-/// Scan a single block by hash. Returns the block JSON and optional shield data.
+/// Scan a single block by hash for Sapling transactions.
 ///
-/// Uses the block JSON directly (caller already has the hash from chaining).
-pub fn scan_block_json(block_json: &Value, height: u32) -> Result<Option<RawShieldBlock>, ScanError> {
-    let txs = block_json
+/// Uses verbosity 1 to get the tx list (avoids TxToUniv crash), then
+/// fetches raw hex for each tx and checks for the Sapling header.
+fn scan_block_inner(
+    rpc: &RpcClient,
+    block_json: &serde_json::Value,
+    height: u32,
+) -> Result<Option<RawShieldBlock>, ScanError> {
+    let txids = block_json
         .get("tx")
         .and_then(|t| t.as_array())
         .ok_or(ScanError::Parse("missing 'tx' array in block".into()))?;
 
     let mut entries = Vec::new();
 
-    for tx in txs {
-        if let Some(compact) = extract_compact_tx(tx)? {
-            entries.push(BlockEntry::CompactTx(compact));
+    for txid_val in txids {
+        let txid = txid_val
+            .as_str()
+            .ok_or(ScanError::Parse("txid not a string".into()))?;
+
+        // Fetch raw transaction hex
+        let raw_hex = match rpc.get_raw_transaction(txid, false) {
+            Ok(val) => match val.as_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            },
+            Err(e) => {
+                eprintln!("  Warning: getrawtransaction({txid}): {e} — skipping tx");
+                continue;
+            }
+        };
+
+        // Decode hex to bytes
+        let tx_bytes = match encoding::hex_decode(&raw_hex) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Check for Sapling tx header (version 3, type 10)
+        if tx_bytes.len() >= 4 && tx_bytes[..4] == SAPLING_TX_HEADER {
+            entries.push(BlockEntry::FullTx(tx_bytes));
         }
     }
 
@@ -38,26 +68,32 @@ pub fn scan_block_json(block_json: &Value, height: u32) -> Result<Option<RawShie
     }
 }
 
-/// Scan a single block by height (standalone, uses 2 RPC calls).
+/// Scan a single block by height (standalone).
 pub fn scan_block(rpc: &RpcClient, height: u32) -> Result<Option<RawShieldBlock>, ScanError> {
     let hash = rpc
         .get_block_hash(height)
         .map_err(|e| ScanError::Rpc(format!("getblockhash({height}): {e}")))?;
 
+    // Verbosity 1 = block with txid list (no decoded txs, no crash)
     let block_json = rpc
-        .get_block(&hash, 2)
+        .get_block(&hash, 1)
         .map_err(|e| ScanError::Rpc(format!("getblock({hash}): {e}")))?;
 
-    scan_block_json(&block_json, height)
+    let h = block_json
+        .get("height")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(height);
+
+    scan_block_inner(rpc, &block_json, h)
 }
 
 /// Scan a range of blocks by chaining via `nextblockhash`.
 ///
 /// Only calls `getblockhash` once (for the first block), then follows the
-/// chain via `nextblockhash` — one RPC call per block instead of two.
+/// chain — one `getblock` call per block + one `getrawtransaction` per tx.
 ///
 /// Skips blocks that return RPC errors and continues scanning.
-/// Calls `on_progress(current, total)` after each block.
 pub fn scan_range(
     rpc: &RpcClient,
     start: u32,
@@ -76,8 +112,8 @@ pub fn scan_range(
     for height in start..=end {
         on_progress(height - start, total);
 
-        // Fetch block (verbosity 2 = full decoded txs)
-        let block_json = match rpc.get_block(&current_hash, 2) {
+        // Fetch block at verbosity 1 (txid list only)
+        let block_json = match rpc.get_block(&current_hash, 1) {
             Ok(json) => json,
             Err(e) => {
                 eprintln!("\n  Warning: block {height} ({current_hash}): {e} — skipping");
@@ -89,14 +125,21 @@ pub fn scan_range(
                         current_hash = hash;
                         continue;
                     }
-                    Err(_) => break, // Can't recover — stop scanning
+                    Err(_) => break,
                 }
             }
         };
 
-        // Extract shield data
-        match scan_block_json(&block_json, height) {
-            Ok(Some(block)) => shield_blocks.push(block),
+        // Extract Sapling txs
+        match scan_block_inner(rpc, &block_json, height) {
+            Ok(Some(block)) => {
+                let tx_count = block.entries.len();
+                shield_blocks.push(block);
+                if tx_count > 0 {
+                    eprintln!("\n  Found shield block {height} ({tx_count} Sapling tx{})",
+                        if tx_count == 1 { "" } else { "s" });
+                }
+            }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("\n  Warning: block {height} parse error: {e} — skipping");
@@ -104,10 +147,10 @@ pub fn scan_range(
             }
         }
 
-        // Chain to next block via nextblockhash
+        // Chain to next block
         match block_json.get("nextblockhash").and_then(|v| v.as_str()) {
             Some(next) => current_hash = next.to_string(),
-            None => break, // We've reached the chain tip
+            None => break,
         }
     }
 
@@ -118,100 +161,6 @@ pub fn scan_range(
     }
 
     Ok(shield_blocks)
-}
-
-// ---------------------------------------------------------------------------
-// Transaction extraction
-// ---------------------------------------------------------------------------
-
-/// Extract compact Sapling data from a decoded transaction JSON.
-///
-/// Returns `None` if the transaction has no Sapling spends or outputs.
-fn extract_compact_tx(tx: &Value) -> Result<Option<CompactTransaction>, ScanError> {
-    let spends = tx.get("vShieldedSpend").and_then(|v| v.as_array());
-    let outputs = tx.get("vShieldedOutput").and_then(|v| v.as_array());
-
-    let has_spends = spends.map_or(false, |s| !s.is_empty());
-    let has_outputs = outputs.map_or(false, |o| !o.is_empty());
-
-    if !has_spends && !has_outputs {
-        return Ok(None);
-    }
-
-    // Extract nullifiers from spends
-    let mut nullifiers = Vec::new();
-    if let Some(spends) = spends {
-        for spend in spends {
-            let nf_hex = spend
-                .get("nullifier")
-                .and_then(|v| v.as_str())
-                .ok_or(ScanError::Parse("spend missing 'nullifier'".into()))?;
-
-            let nf_bytes = hex_to_32(nf_hex, "nullifier")?;
-            nullifiers.push(nf_bytes);
-        }
-    }
-
-    // Extract compact data from outputs
-    let mut compact_outputs = Vec::new();
-    if let Some(outputs) = outputs {
-        for output in outputs {
-            let cmu_hex = output
-                .get("cmu")
-                .and_then(|v| v.as_str())
-                .ok_or(ScanError::Parse("output missing 'cmu'".into()))?;
-
-            let epk_hex = output
-                .get("ephemeralKey")
-                .and_then(|v| v.as_str())
-                .ok_or(ScanError::Parse("output missing 'ephemeralKey'".into()))?;
-
-            let enc_hex = output
-                .get("encCiphertext")
-                .and_then(|v| v.as_str())
-                .ok_or(ScanError::Parse("output missing 'encCiphertext'".into()))?;
-
-            let cmu = hex_to_32(cmu_hex, "cmu")?;
-            let epk = hex_to_32(epk_hex, "ephemeralKey")?;
-
-            let enc_bytes = encoding::hex_decode(enc_hex)
-                .map_err(|e| ScanError::Parse(format!("encCiphertext hex: {e}")))?;
-
-            if enc_bytes.len() != ENC_CIPHERTEXT_SIZE {
-                return Err(ScanError::Parse(format!(
-                    "encCiphertext wrong size: {} (expected {ENC_CIPHERTEXT_SIZE})",
-                    enc_bytes.len()
-                )));
-            }
-
-            let mut enc_ciphertext = [0u8; ENC_CIPHERTEXT_SIZE];
-            enc_ciphertext.copy_from_slice(&enc_bytes);
-
-            compact_outputs.push(CompactSaplingOutput {
-                cmu,
-                epk,
-                enc_ciphertext,
-            });
-        }
-    }
-
-    Ok(Some(CompactTransaction {
-        nullifiers,
-        outputs: compact_outputs,
-    }))
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Decode a hex string to a 32-byte array.
-fn hex_to_32(hex: &str, field_name: &str) -> Result<[u8; 32], ScanError> {
-    let bytes = encoding::hex_decode(hex)
-        .map_err(|e| ScanError::Parse(format!("{field_name} hex: {e}")))?;
-    bytes
-        .try_into()
-        .map_err(|_| ScanError::Parse(format!("{field_name}: expected 32 bytes")))
 }
 
 // ---------------------------------------------------------------------------
