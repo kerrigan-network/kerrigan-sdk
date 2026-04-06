@@ -535,6 +535,9 @@ fn send_shield(
     ).map_err(|e| WalletError::Transaction(format!("{e}")))?;
     spinner.finish_with("Transaction built");
 
+    // Debug: show tx header for format verification
+    eprintln!("  [debug] TX hex ({} bytes): {}...", result.tx_hex.len() / 2, &result.tx_hex[..16]);
+
     // Broadcast via bridge
     let spinner = Spinner::start("Broadcasting");
     let txid = broadcast_via_bridge(&result.tx_hex)?;

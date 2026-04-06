@@ -266,11 +266,9 @@ pub fn build_shield(
         )
         .map_err(|e| SaplingBuilderError::Build(format!("{e:?}")))?;
 
-    let mut tx_bytes = Vec::new();
-    result
-        .transaction()
-        .write(&mut tx_bytes)
-        .map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
+    // Re-serialize in Kerrigan's type 10 extra payload format
+    let tx_bytes = super::kerrigan_tx::serialize_kerrigan_tx(result.transaction())
+        .map_err(|e| SaplingBuilderError::Build(format!("kerrigan serialize: {e}")))?;
 
     Ok(SaplingTxResult {
         tx_hex: encoding::hex_encode(&tx_bytes),
@@ -408,12 +406,9 @@ fn finalize(
         )
         .map_err(|e| SaplingBuilderError::Build(format!("{e:?}")))?;
 
-    // Serialize to hex
-    let mut tx_bytes = Vec::new();
-    result
-        .transaction()
-        .write(&mut tx_bytes)
-        .map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
+    // Re-serialize in Kerrigan's type 10 extra payload format
+    let tx_bytes = super::kerrigan_tx::serialize_kerrigan_tx(result.transaction())
+        .map_err(|e| SaplingBuilderError::Build(format!("kerrigan serialize: {e}")))?;
 
     Ok(SaplingTxResult {
         tx_hex: encoding::hex_encode(&tx_bytes),

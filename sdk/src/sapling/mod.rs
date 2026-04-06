@@ -19,4 +19,5 @@ pub mod notes;
 pub mod fees;
 pub mod prover;
 pub mod builder;
+pub mod kerrigan_tx;
 pub mod sync;
