@@ -394,13 +394,13 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         }
         (true, false) => {
             // Private → Public (unshielding)
-            // TODO: implement unshielding flow
-            Err(WalletError::Other("Unshielding (private → public) not yet implemented".into()))
+            let amount = wallet::parse_krgn(amount_str)?;
+            send_unshield(&mut wallet_data, to_address, amount)
         }
         (true, true) => {
             // Private → Private (shield-to-shield)
-            // TODO: implement shield send flow
-            Err(WalletError::Other("Shield send (private → private) not yet implemented".into()))
+            let amount = wallet::parse_krgn(amount_str)?;
+            send_sapling(&mut wallet_data, to_address, amount, _memo)
         }
     }
 }
@@ -562,6 +562,147 @@ fn send_shield(
             true
         }
     });
+    crate::storage::save_wallet(wallet_data)?;
+
+    Ok(())
+}
+
+/// Shield-to-shield send — private → private.
+fn send_sapling(
+    wallet_data: &mut WalletData,
+    to_address: &str,
+    amount: u64,
+    memo: &str,
+) -> Result<(), WalletError> {
+    let to_shielded = kerrigan_sdk::sapling::keys::decode_payment_address(to_address)
+        .map_err(|e| WalletError::Transaction(format!("invalid shielded address: {e}")))?;
+
+    let extsk_encoded = wallet_data.sapling_extsk.as_ref()
+        .ok_or(WalletError::Other("no shielded spending key".into()))?;
+    let extsk = kerrigan_sdk::sapling::keys::decode_extsk(extsk_encoded)
+        .map_err(|e| WalletError::Other(format!("decode extsk: {e}")))?;
+
+    let fee = kerrigan_sdk::sapling::fees::shield_send_fee(1); // minimum estimate
+    if wallet_data.shielded_balance() < amount + fee {
+        return Err(WalletError::Transaction(format!(
+            "insufficient private balance: have {} sat, need {} sat",
+            wallet_data.shielded_balance(), amount + fee
+        )));
+    }
+
+    // Load notes
+    let notes: Vec<kerrigan_sdk::sapling::notes::SpendableNote> = wallet_data.unspent_notes.iter()
+        .map(kerrigan_sdk::sapling::notes::SpendableNote::from_serialized)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| WalletError::Other(format!("load notes: {e}")))?;
+
+    let memo_bytes = if memo.is_empty() {
+        None
+    } else {
+        let mut m = [0u8; 512];
+        let bytes = memo.as_bytes();
+        m[..bytes.len().min(512)].copy_from_slice(&bytes[..bytes.len().min(512)]);
+        Some(m)
+    };
+
+    println!();
+    term::header("Shield Send");
+    println!();
+    println!("   {}  {}", term::dim("Type:"), term::bold("Private → Private"));
+    println!("   {}  {}", term::dim("To:"), term::bold(&to_address[..20]));
+    println!("   {}  {} KRGN", term::dim("Amount:"), term::green_bold(&wallet::format_krgn(amount)));
+    println!();
+
+    if !confirm(&format!("  Confirm send? ({}/no): ", term::green("yes")), "yes") {
+        println!("  {}", term::dim("Cancelled."));
+        return Ok(());
+    }
+
+    let spinner = Spinner::start("Loading Sapling parameters");
+    let prover = crate::sapling_params::ensure_params(|msg| {
+        spinner.set_progress(0.0, Some(msg));
+    })?;
+    spinner.finish_with("Parameters loaded");
+
+    let spinner = Spinner::start("Building shield transaction");
+    let result = kerrigan_sdk::sapling::builder::build_sapling_send(
+        &notes, &extsk, &to_shielded, amount, memo_bytes, &prover,
+    ).map_err(|e| WalletError::Transaction(format!("{e}")))?;
+    spinner.finish_with("Transaction built");
+
+    let spinner = Spinner::start("Broadcasting");
+    let txid = broadcast_via_bridge(&result.tx_hex)?;
+    spinner.finish_with("Transaction sent!");
+
+    println!();
+    println!("  {} {}", term::dim("TXID:"), term::purple(&txid));
+    println!();
+
+    // Mark spent notes
+    wallet_data.unspent_notes.retain(|n| !result.nullifiers.contains(&n.nullifier));
+    crate::storage::save_wallet(wallet_data)?;
+
+    Ok(())
+}
+
+/// Unshield send — private → public.
+fn send_unshield(
+    wallet_data: &mut WalletData,
+    to_address: &str,
+    amount: u64,
+) -> Result<(), WalletError> {
+    let extsk_encoded = wallet_data.sapling_extsk.as_ref()
+        .ok_or(WalletError::Other("no shielded spending key".into()))?;
+    let extsk = kerrigan_sdk::sapling::keys::decode_extsk(extsk_encoded)
+        .map_err(|e| WalletError::Other(format!("decode extsk: {e}")))?;
+
+    let fee = kerrigan_sdk::sapling::fees::unshield_fee(1);
+    if wallet_data.shielded_balance() < amount + fee {
+        return Err(WalletError::Transaction(format!(
+            "insufficient private balance: have {} sat, need {} sat",
+            wallet_data.shielded_balance(), amount + fee
+        )));
+    }
+
+    let notes: Vec<kerrigan_sdk::sapling::notes::SpendableNote> = wallet_data.unspent_notes.iter()
+        .map(kerrigan_sdk::sapling::notes::SpendableNote::from_serialized)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| WalletError::Other(format!("load notes: {e}")))?;
+
+    println!();
+    term::header("Unshield Transaction");
+    println!();
+    println!("   {}  {}", term::dim("Type:"), term::bold("Private → Public"));
+    println!("   {}  {}", term::dim("To:"), term::bold(to_address));
+    println!("   {}  {} KRGN", term::dim("Amount:"), term::green_bold(&wallet::format_krgn(amount)));
+    println!();
+
+    if !confirm(&format!("  Confirm unshield? ({}/no): ", term::green("yes")), "yes") {
+        println!("  {}", term::dim("Cancelled."));
+        return Ok(());
+    }
+
+    let spinner = Spinner::start("Loading Sapling parameters");
+    let prover = crate::sapling_params::ensure_params(|msg| {
+        spinner.set_progress(0.0, Some(msg));
+    })?;
+    spinner.finish_with("Parameters loaded");
+
+    let spinner = Spinner::start("Building unshield transaction");
+    let result = kerrigan_sdk::sapling::builder::build_unshield(
+        &notes, &extsk, to_address, amount, &prover,
+    ).map_err(|e| WalletError::Transaction(format!("{e}")))?;
+    spinner.finish_with("Transaction built");
+
+    let spinner = Spinner::start("Broadcasting");
+    let txid = broadcast_via_bridge(&result.tx_hex)?;
+    spinner.finish_with("Transaction sent!");
+
+    println!();
+    println!("  {} {}", term::dim("TXID:"), term::purple(&txid));
+    println!();
+
+    wallet_data.unspent_notes.retain(|n| !result.nullifiers.contains(&n.nullifier));
     crate::storage::save_wallet(wallet_data)?;
 
     Ok(())

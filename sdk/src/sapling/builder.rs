@@ -8,13 +8,17 @@
 /// Then serializes in Kerrigan's type 10 extra payload format.
 use rand_core::OsRng;
 use sapling::builder::BundleType;
+use sapling::keys::SpendAuthorizingKey;
 use sapling::note_encryption::Zip212Enforcement;
 use sapling::value::NoteValue;
+use sapling::zip32::ExtendedSpendingKey;
 use sapling::{Anchor, PaymentAddress};
 
+use crate::encoding;
 use crate::transaction::Utxo;
 use super::fees;
 use super::keys;
+use super::notes::SpendableNote;
 use super::prover::SaplingProver;
 
 // ---------------------------------------------------------------------------
@@ -68,7 +72,7 @@ pub fn build_shield(
 
     let change = total - amount - fee;
 
-    // Step 1: Build unauthorized sapling bundle (circuit descriptions)
+    // Build sapling bundle with one output (no spends)
     let mut sapling_builder = sapling::builder::Builder::new(
         Zip212Enforcement::On,
         BundleType::DEFAULT,
@@ -88,44 +92,268 @@ pub fn build_shield(
         .map_err(|e| SaplingBuilderError::Build(format!("build: {e:?}")))?
         .ok_or(SaplingBuilderError::Build("empty bundle".into()))?;
 
-    // Step 2: Create Groth16 proofs
-    let proven_bundle = unauth_bundle.create_proofs(
-        &prover.1, // SpendParameters
-        &prover.0, // OutputParameters
-        OsRng,
-        (),        // no progress tracking
-    );
+    // Create proofs
+    let proven_bundle = unauth_bundle.create_proofs(&prover.1, &prover.0, OsRng, ());
 
-    // Step 3: Compute Kerrigan sighash from the proven bundle
+    // Compute Kerrigan sighash
     let sighash = super::kerrigan_tx::compute_kerrigan_sighash_from_bundle(
-        &selected,
-        from_address,
-        change,
-        &proven_bundle,
+        &selected, from_address, change, &proven_bundle,
     ).map_err(|e| SaplingBuilderError::Build(format!("sighash: {e}")))?;
 
-    // Step 4: Apply binding signature with Kerrigan sighash
+    // Apply binding signature (no spend auth keys for shielding)
     let auth_bundle = proven_bundle
         .apply_signatures(OsRng, sighash, &[])
         .map_err(|e| SaplingBuilderError::Build(format!("apply signatures: {e:?}")))?;
 
-    // Step 5: Serialize in Kerrigan type 10 format
+    // Serialize in Kerrigan type 10 format
     let tx_hex = super::kerrigan_tx::serialize_kerrigan_shield_tx(
-        &selected,
-        privkey,
-        pubkey,
-        from_address,
-        change,
-        &auth_bundle,
-        &sighash,
+        &selected, privkey, pubkey, from_address, change, &auth_bundle, &sighash,
     ).map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
 
-    Ok(SaplingTxResult {
-        tx_hex,
-        nullifiers: Vec::new(),
-        amount,
-        fee,
-    })
+    Ok(SaplingTxResult { tx_hex, nullifiers: Vec::new(), amount, fee })
+}
+
+// ---------------------------------------------------------------------------
+// Shield-to-shield send (private → private)
+// ---------------------------------------------------------------------------
+
+/// Build a shield-to-shield transaction (spend sapling notes → sapling output).
+#[allow(clippy::too_many_arguments)]
+pub fn build_sapling_send(
+    notes: &[SpendableNote],
+    extsk: &ExtendedSpendingKey,
+    to: &PaymentAddress,
+    amount: u64,
+    memo: Option<[u8; 512]>,
+    prover: &SaplingProver,
+) -> Result<SaplingTxResult, SaplingBuilderError> {
+    if notes.is_empty() {
+        return Err(SaplingBuilderError::NoNotes);
+    }
+
+    // Derive keys
+    #[allow(deprecated)]
+    let dfvk = extsk.to_diversifiable_full_viewing_key();
+    let fvk = dfvk.fvk().clone();
+    let nk = dfvk.to_nk(pivx_primitives::zip32::Scope::External);
+
+    // Get anchor from first note's witness
+    let anchor = Anchor::from_bytes(notes[0].witness.root().to_bytes())
+        .into_option()
+        .ok_or(SaplingBuilderError::InvalidAnchor)?;
+
+    let mut sapling_builder = sapling::builder::Builder::new(
+        Zip212Enforcement::On,
+        BundleType::DEFAULT,
+        anchor,
+    );
+
+    // Select notes and add spends
+    let mut total = 0u64;
+    let mut nullifiers = Vec::new();
+    let mut num_spends = 0usize;
+
+    for note in notes {
+        let path = note.witness.path()
+            .ok_or(SaplingBuilderError::WitnessPathMissing)?;
+
+        sapling_builder
+            .add_spend(fvk.clone(), note.note.clone(), path)
+            .map_err(|e| SaplingBuilderError::Build(format!("add spend: {e:?}")))?;
+
+        let nf = note.note.nf(&nk, note.witness.path().unwrap().position().into());
+        nullifiers.push(encoding::hex_encode(&nf.0));
+
+        num_spends += 1;
+        total += note.note.value().inner();
+
+        let current_fee = fees::shield_send_fee(num_spends);
+        if total >= amount + current_fee {
+            break;
+        }
+    }
+
+    let fee = fees::shield_send_fee(num_spends);
+    if total < amount + fee {
+        return Err(SaplingBuilderError::InsufficientBalance { have: total, need: amount + fee });
+    }
+
+    // Add payment output
+    sapling_builder
+        .add_output(None, *to, NoteValue::from_raw(amount), memo)
+        .map_err(|e| SaplingBuilderError::Build(format!("add output: {e:?}")))?;
+
+    // Add change output (back to ourselves)
+    let change = total - amount - fee;
+    if change > 0 {
+        let (_, change_addr) = dfvk.default_address();
+        sapling_builder
+            .add_output(None, change_addr, NoteValue::from_raw(change), None)
+            .map_err(|e| SaplingBuilderError::Build(format!("add change: {e:?}")))?;
+    }
+
+    // Build proofs and sign
+    build_and_sign_sapling_only(sapling_builder, extsk, prover, nullifiers, amount, fee)
+}
+
+// ---------------------------------------------------------------------------
+// Unshielding (private → public)
+// ---------------------------------------------------------------------------
+
+/// Build an unshielding transaction (spend sapling notes → transparent output).
+#[allow(clippy::too_many_arguments)]
+pub fn build_unshield(
+    notes: &[SpendableNote],
+    extsk: &ExtendedSpendingKey,
+    to_transparent: &str,
+    amount: u64,
+    prover: &SaplingProver,
+) -> Result<SaplingTxResult, SaplingBuilderError> {
+    if notes.is_empty() {
+        return Err(SaplingBuilderError::NoNotes);
+    }
+
+    // Validate transparent destination
+    crate::keys::validate_address(to_transparent)
+        .map_err(|e| SaplingBuilderError::InvalidAddress(format!("{e}")))?;
+
+    // Derive keys
+    #[allow(deprecated)]
+    let dfvk = extsk.to_diversifiable_full_viewing_key();
+    let fvk = dfvk.fvk().clone();
+    let nk = dfvk.to_nk(pivx_primitives::zip32::Scope::External);
+
+    let anchor = Anchor::from_bytes(notes[0].witness.root().to_bytes())
+        .into_option()
+        .ok_or(SaplingBuilderError::InvalidAnchor)?;
+
+    let mut sapling_builder = sapling::builder::Builder::new(
+        Zip212Enforcement::On,
+        BundleType::DEFAULT,
+        anchor,
+    );
+
+    // Select notes
+    let mut total = 0u64;
+    let mut nullifiers = Vec::new();
+    let mut num_spends = 0usize;
+
+    for note in notes {
+        let path = note.witness.path()
+            .ok_or(SaplingBuilderError::WitnessPathMissing)?;
+
+        sapling_builder
+            .add_spend(fvk.clone(), note.note.clone(), path)
+            .map_err(|e| SaplingBuilderError::Build(format!("add spend: {e:?}")))?;
+
+        let nf = note.note.nf(&nk, note.witness.path().unwrap().position().into());
+        nullifiers.push(encoding::hex_encode(&nf.0));
+
+        num_spends += 1;
+        total += note.note.value().inner();
+
+        let current_fee = fees::unshield_fee(num_spends);
+        if total >= amount + current_fee {
+            break;
+        }
+    }
+
+    let fee = fees::unshield_fee(num_spends);
+    if total < amount + fee {
+        return Err(SaplingBuilderError::InsufficientBalance { have: total, need: amount + fee });
+    }
+
+    // Shielded change (if any)
+    let change = total - amount - fee;
+    if change > 0 {
+        let (_, change_addr) = dfvk.default_address();
+        sapling_builder
+            .add_output(None, change_addr, NoteValue::from_raw(change), None)
+            .map_err(|e| SaplingBuilderError::Build(format!("add change: {e:?}")))?;
+    }
+
+    // Build the sapling bundle (proofs + signatures)
+    let (auth_bundle, sighash, bundle_nullifiers, bundle_fee) =
+        build_sapling_bundle_with_sighash(
+            sapling_builder, extsk, prover, &nullifiers,
+            // For unshield sighash: transparent output to include
+            Some((to_transparent, amount)),
+            fee,
+        )?;
+
+    // Serialize in Kerrigan type 10 format with transparent output
+    let tx_hex = super::kerrigan_tx::serialize_kerrigan_unshield_tx(
+        to_transparent, amount, &auth_bundle, &sighash,
+    ).map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
+
+    Ok(SaplingTxResult { tx_hex, nullifiers, amount, fee })
+}
+
+// ---------------------------------------------------------------------------
+// Internal: build sapling bundle with Kerrigan sighash
+// ---------------------------------------------------------------------------
+
+/// Build, prove, and sign a sapling-only transaction (no transparent inputs).
+fn build_and_sign_sapling_only(
+    sapling_builder: sapling::builder::Builder,
+    extsk: &ExtendedSpendingKey,
+    prover: &SaplingProver,
+    nullifiers: Vec<String>,
+    amount: u64,
+    fee: u64,
+) -> Result<SaplingTxResult, SaplingBuilderError> {
+    let (auth_bundle, sighash, _, _) = build_sapling_bundle_with_sighash(
+        sapling_builder, extsk, prover, &nullifiers, None, fee,
+    )?;
+
+    // Serialize — no transparent inputs or outputs
+    let tx_hex = super::kerrigan_tx::serialize_kerrigan_sapling_only_tx(
+        &auth_bundle, &sighash,
+    ).map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
+
+    Ok(SaplingTxResult { tx_hex, nullifiers, amount, fee })
+}
+
+/// Core bundle builder: proofs → Kerrigan sighash → signatures.
+fn build_sapling_bundle_with_sighash(
+    sapling_builder: sapling::builder::Builder,
+    extsk: &ExtendedSpendingKey,
+    prover: &SaplingProver,
+    nullifiers: &[String],
+    transparent_output: Option<(&str, u64)>, // (address, amount) for unshielding
+    fee: u64,
+) -> Result<(
+    sapling::bundle::Bundle<sapling::bundle::Authorized, i64>,
+    [u8; 32],
+    Vec<String>,
+    u64,
+), SaplingBuilderError> {
+    use sapling::circuit::{SpendParameters, OutputParameters};
+
+    // Step 1: Build unauthorized bundle
+    let (unauth_bundle, _metadata) = sapling_builder
+        .build::<SpendParameters, OutputParameters, OsRng, i64>(&[extsk.clone()], OsRng)
+        .map_err(|e| SaplingBuilderError::Build(format!("build: {e:?}")))?
+        .ok_or(SaplingBuilderError::Build("empty bundle".into()))?;
+
+    // Step 2: Create Groth16 proofs
+    let proven_bundle = unauth_bundle.create_proofs(&prover.1, &prover.0, OsRng, ());
+
+    // Step 3: Compute Kerrigan sighash
+    let sighash = super::kerrigan_tx::compute_kerrigan_sighash_sapling(
+        transparent_output, &proven_bundle,
+    ).map_err(|e| SaplingBuilderError::Build(format!("sighash: {e}")))?;
+
+    // Step 4: Apply signatures (binding sig + spend auth sigs)
+    let ask = extsk.expsk.ask.clone();
+    let num_spends = proven_bundle.shielded_spends().len();
+    let signing_keys: Vec<SpendAuthorizingKey> = (0..num_spends).map(|_| ask.clone()).collect();
+
+    let auth_bundle = proven_bundle
+        .apply_signatures(OsRng, sighash, &signing_keys)
+        .map_err(|e| SaplingBuilderError::Build(format!("apply signatures: {e:?}")))?;
+
+    Ok((auth_bundle, sighash, nullifiers.to_vec(), fee))
 }
 
 // ---------------------------------------------------------------------------

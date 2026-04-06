@@ -333,6 +333,157 @@ fn sign_transparent_input(
 }
 
 // ---------------------------------------------------------------------------
+// Sighash for sapling-only txs (shield-to-shield, unshield)
+// ---------------------------------------------------------------------------
+
+/// Compute Kerrigan sighash for a transaction with sapling spends.
+/// Optionally includes a transparent output (for unshielding).
+pub fn compute_kerrigan_sighash_sapling(
+    transparent_output: Option<(&str, u64)>,
+    bundle: &Bundle<InProgress<Proven, Unsigned>, i64>,
+) -> Result<[u8; 32], String> {
+    let mut hw = Vec::new();
+
+    // nVersion (i16 LE)
+    hw.extend_from_slice(&(KERRIGAN_TX_VERSION as i16).to_le_bytes());
+
+    // hashPrevouts (empty — no transparent inputs)
+    hw.extend_from_slice(&sha256d(&[]));
+
+    // hashSequence (empty)
+    hw.extend_from_slice(&sha256d(&[]));
+
+    // hashOutputs
+    let hash_outputs = if let Some((addr, amount)) = transparent_output {
+        let mut data = Vec::new();
+        data.extend_from_slice(&(amount as i64).to_le_bytes());
+        let pubkey_hash = crate::keys::address_to_pubkey_hash(addr)
+            .map_err(|e| format!("output addr: {e}"))?;
+        let script = crate::script::p2pkh_script(&pubkey_hash);
+        write_compact_size(&mut data, script.len());
+        data.extend_from_slice(&script);
+        sha256d(&data)
+    } else {
+        sha256d(&[])
+    };
+    hw.extend_from_slice(&hash_outputs);
+
+    // nLockTime
+    hw.extend_from_slice(&0u32.to_le_bytes());
+
+    // nType (u16 LE)
+    hw.extend_from_slice(&KERRIGAN_SAPLING_TYPE.to_le_bytes());
+
+    // payloadVersion (u16 LE)
+    hw.extend_from_slice(&SAPLING_PAYLOAD_VERSION.to_le_bytes());
+
+    // hashShieldedSpends
+    let hash_spends = {
+        let mut data = Vec::new();
+        for spend in bundle.shielded_spends() {
+            data.extend_from_slice(&spend.cv().to_bytes());
+            data.extend_from_slice(&spend.anchor().to_bytes());
+            data.extend_from_slice(&spend.nullifier().0);
+            data.extend_from_slice(&<[u8; 32]>::from(*spend.rk()));
+            data.extend_from_slice(spend.zkproof());
+        }
+        sha256d(&data)
+    };
+    hw.extend_from_slice(&hash_spends);
+
+    // hashShieldedOutputs
+    let hash_outputs_shielded = {
+        let mut data = Vec::new();
+        for output in bundle.shielded_outputs() {
+            data.extend_from_slice(&output.cv().to_bytes());
+            data.extend_from_slice(&output.cmu().to_bytes());
+            data.extend_from_slice(output.ephemeral_key().as_ref());
+            data.extend_from_slice(output.enc_ciphertext());
+            data.extend_from_slice(output.out_ciphertext());
+            data.extend_from_slice(output.zkproof());
+        }
+        sha256d(&data)
+    };
+    hw.extend_from_slice(&hash_outputs_shielded);
+
+    // valueBalance
+    let vb: i64 = *bundle.value_balance();
+    hw.extend_from_slice(&vb.to_le_bytes());
+
+    Ok(sha256d(&hw))
+}
+
+// ---------------------------------------------------------------------------
+// Serialize sapling-only tx (shield-to-shield, no transparent)
+// ---------------------------------------------------------------------------
+
+/// Serialize a Kerrigan type 10 tx with only sapling data (no transparent I/O).
+pub fn serialize_kerrigan_sapling_only_tx(
+    bundle: &Bundle<Authorized, i64>,
+    _sighash: &[u8; 32],
+) -> Result<String, String> {
+    let mut tx = Vec::new();
+
+    // Header
+    let header: u32 = ((KERRIGAN_SAPLING_TYPE as u32) << 16) | (KERRIGAN_TX_VERSION as u32);
+    tx.extend_from_slice(&header.to_le_bytes());
+
+    // Empty vin/vout
+    write_compact_size(&mut tx, 0);
+    write_compact_size(&mut tx, 0);
+
+    // nLockTime
+    tx.extend_from_slice(&0u32.to_le_bytes());
+
+    // Extra payload
+    let payload = build_sapling_payload(bundle)?;
+    write_compact_size(&mut tx, payload.len());
+    tx.extend_from_slice(&payload);
+
+    Ok(encoding::hex_encode(&tx))
+}
+
+// ---------------------------------------------------------------------------
+// Serialize unshield tx (sapling spends → transparent output)
+// ---------------------------------------------------------------------------
+
+/// Serialize a Kerrigan type 10 unshield tx (sapling → transparent).
+pub fn serialize_kerrigan_unshield_tx(
+    to_address: &str,
+    amount: u64,
+    bundle: &Bundle<Authorized, i64>,
+    _sighash: &[u8; 32],
+) -> Result<String, String> {
+    let mut tx = Vec::new();
+
+    // Header
+    let header: u32 = ((KERRIGAN_SAPLING_TYPE as u32) << 16) | (KERRIGAN_TX_VERSION as u32);
+    tx.extend_from_slice(&header.to_le_bytes());
+
+    // No transparent inputs
+    write_compact_size(&mut tx, 0);
+
+    // One transparent output
+    write_compact_size(&mut tx, 1);
+    tx.extend_from_slice(&(amount as i64).to_le_bytes());
+    let pubkey_hash = crate::keys::address_to_pubkey_hash(to_address)
+        .map_err(|e| format!("output addr: {e}"))?;
+    let script = crate::script::p2pkh_script(&pubkey_hash);
+    write_compact_size(&mut tx, script.len());
+    tx.extend_from_slice(&script);
+
+    // nLockTime
+    tx.extend_from_slice(&0u32.to_le_bytes());
+
+    // Extra payload
+    let payload = build_sapling_payload(bundle)?;
+    write_compact_size(&mut tx, payload.len());
+    tx.extend_from_slice(&payload);
+
+    Ok(encoding::hex_encode(&tx))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
