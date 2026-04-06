@@ -8,16 +8,16 @@
 /// The SDK builds the transaction; the caller broadcasts it.
 
 use rand_core::OsRng;
-use sapling_crypto::zip32::ExtendedSpendingKey;
-use sapling_crypto::{Anchor, PaymentAddress};
-use zcash_primitives::consensus::BlockHeight;
-use zcash_primitives::memo::MemoBytes;
-use zcash_primitives::transaction::builder::{BuildConfig, Builder};
-use zcash_primitives::transaction::components::transparent::builder::TransparentSigningSet;
-use zcash_primitives::transaction::fees::fixed::FeeRule;
-use zcash_primitives::zip32::Scope;
-use zcash_protocol::memo::Memo;
-use zcash_protocol::value::Zatoshis;
+use sapling::zip32::ExtendedSpendingKey;
+use sapling::{Anchor, PaymentAddress};
+use pivx_primitives::consensus::BlockHeight;
+use pivx_primitives::memo::MemoBytes;
+use pivx_primitives::transaction::builder::{BuildConfig, Builder};
+use pivx_primitives::transaction::components::transparent::builder::TransparentSigningSet;
+use pivx_primitives::transaction::fees::fixed::FeeRule;
+use pivx_primitives::zip32::Scope;
+use pivx_protocol::memo::Memo;
+use pivx_protocol::value::Zatoshis;
 use zcash_transparent::address::TransparentAddress;
 use zcash_transparent::bundle::{OutPoint, TxOut};
 
@@ -201,10 +201,11 @@ pub fn build_shield(
         // Use the UTXO's scriptPubKey directly
         let script_bytes = encoding::hex_decode(&utxo.script_pubkey)
             .map_err(|e| SaplingBuilderError::Build(format!("script hex: {e}")))?;
-        let script = zcash_transparent::address::Script(
-            zcash_script::script::Code(script_bytes),
-        );
-        let coin = TxOut::new(zatoshis(utxo.amount)?, script);
+        let script = zcash_transparent::address::Script(script_bytes);
+        let coin = TxOut {
+            value: zatoshis(utxo.amount)?,
+            script_pubkey: script,
+        };
 
         builder
             .add_transparent_input(secp_pubkey, outpoint, coin)
@@ -523,19 +524,19 @@ mod tests {
     fn anchor_extraction_requires_witness_path() {
         // A fresh witness from a tree with one node should have a path.
         let mut tree = super::super::tree::empty_tree();
-        let node = sapling_crypto::Node::from_bytes([42u8; 32]).unwrap();
+        let node = sapling::Node::from_bytes([42u8; 32]).unwrap();
         super::super::tree::append_node(&mut tree, node).unwrap();
         let witness = super::super::tree::witness_from_tree(&tree).unwrap();
 
         let note = SpendableNote {
-            note: sapling_crypto::Note::from_parts(
+            note: sapling::Note::from_parts(
                 keys::default_payment_address(
                     &keys::full_viewing_key(
                         &keys::default_spending_key(&[0u8; 64]).unwrap(),
                     ),
                 ),
-                sapling_crypto::value::NoteValue::from_raw(100_000),
-                sapling_crypto::note::Rseed::AfterZip212([0u8; 32]),
+                sapling::value::NoteValue::from_raw(100_000),
+                sapling::note::Rseed::AfterZip212([0u8; 32]),
             ),
             witness,
             nullifier: String::new(),

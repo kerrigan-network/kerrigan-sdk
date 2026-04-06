@@ -17,9 +17,9 @@
 /// don't verify proofs (the blockchain already did). This cuts ~42-62% of
 /// sync data before transport compression.
 
-use sapling_crypto::note_encryption::{PreparedIncomingViewingKey, SaplingDomain, Zip212Enforcement};
-use sapling_crypto::zip32::ExtendedFullViewingKey;
-use sapling_crypto::{Node, NullifierDerivingKey};
+use sapling::note_encryption::{PreparedIncomingViewingKey, SaplingDomain, Zip212Enforcement};
+use sapling::zip32::ExtendedFullViewingKey;
+use sapling::{Node, NullifierDerivingKey};
 use zcash_note_encryption::{try_note_decryption, EphemeralKeyBytes, ShieldedOutput, ENC_CIPHERTEXT_SIZE};
 
 use crate::encoding;
@@ -308,7 +308,7 @@ pub fn process_compact_transaction(
     // Process each output
     for output in &tx.outputs {
         let cmu_node = Node::from_cmu(
-            &sapling_crypto::note::ExtractedNoteCommitment::from_bytes(&output.cmu)
+            &sapling::note::ExtractedNoteCommitment::from_bytes(&output.cmu)
                 .into_option()
                 .ok_or(ShieldSyncError::InvalidCmu)?,
         );

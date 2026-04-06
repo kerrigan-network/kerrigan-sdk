@@ -4,7 +4,7 @@
 /// (key derivation, encoding, transaction building) works with Kerrigan's
 /// Sapling activation height, address HRP, and transparent prefixes.
 
-use zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters};
+use pivx_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters};
 
 // ---------------------------------------------------------------------------
 // Network definition

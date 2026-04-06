@@ -2,7 +2,7 @@
 name = "kerrigan-sdk"
 version = "0.1.0"
 edition = "2021"
-description = "Kerrigan Network SDK — pure-Rust transparent wallet primitives"
+description = "Kerrigan Network SDK — pure-Rust wallet primitives with Sapling shield support"
 license = "MIT"
 
 [dependencies]
@@ -22,15 +22,14 @@ zeroize = { version = "1.8", features = ["derive"] }
 # Entropy
 getrandom = "0.2"
 
-# Sapling shielded transactions
-sapling-crypto = "0.5"
-zcash_primitives = { version = "0.26", features = ["transparent-inputs", "non-standard-fees"] }
-zcash_transparent = "0.6"
-zcash_script = "0.4"
-zcash_protocol = "0.7"
-zcash_keys = { version = "0.12", features = ["sapling"] }
+# Sapling shielded transactions (librustpivx — PIVX fork of zcash libs)
+sapling = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase" }
+pivx_primitives = { package = "zcash_primitives", git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", default-features = false, features = ["transparent-inputs", "circuits", "std", "non-standard-fees"] }
+pivx_protocol = { package = "zcash_protocol", git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", default-features = false }
+zcash_keys = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", features = ["unstable", "sapling"] }
+zcash_transparent = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase" }
+bellman = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", features = ["groth16"] }
 zcash_note_encryption = "0.4"
-zcash_proofs = "0.26"
-incrementalmerkletree = "0.8"
-jubjub = "0.10"
+incrementalmerkletree = "0.7"
 rand_core = { version = "0.6", features = ["std"] }
+jubjub = "0.10"

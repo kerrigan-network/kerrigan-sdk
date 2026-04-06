@@ -6,15 +6,15 @@
 
 use std::io::Cursor;
 
-use sapling_crypto::note::Rseed;
-use sapling_crypto::note_encryption::PreparedIncomingViewingKey;
-use sapling_crypto::value::NoteValue;
-use sapling_crypto::zip32::ExtendedFullViewingKey;
-use sapling_crypto::{Node, Note, NullifierDerivingKey};
+use sapling::note::Rseed;
+use sapling::note_encryption::PreparedIncomingViewingKey;
+use sapling::value::NoteValue;
+use sapling::zip32::ExtendedFullViewingKey;
+use sapling::{Node, Note, NullifierDerivingKey};
 use serde::{Deserialize, Serialize};
 use zcash_note_encryption::try_note_decryption;
-use zcash_primitives::consensus::BranchId;
-use zcash_primitives::transaction::Transaction;
+use pivx_primitives::consensus::BranchId;
+use pivx_primitives::transaction::Transaction;
 
 use crate::encoding;
 use super::keys;
@@ -222,8 +222,8 @@ pub fn process_sapling_transaction(
         }
 
         // 3. Try to decrypt this output
-        let domain = sapling_crypto::note_encryption::SaplingDomain::new(
-            sapling_crypto::note_encryption::Zip212Enforcement::On,
+        let domain = sapling::note_encryption::SaplingDomain::new(
+            sapling::note_encryption::Zip212Enforcement::On,
         );
 
         if let Some((note, _recipient, memo_bytes)) =

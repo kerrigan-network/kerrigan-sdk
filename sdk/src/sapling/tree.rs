@@ -7,8 +7,8 @@ use std::io::Cursor;
 
 use incrementalmerkletree::frontier::CommitmentTree;
 use incrementalmerkletree::witness::IncrementalWitness;
-use sapling_crypto::Node;
-use zcash_primitives::merkle_tree::{
+use sapling::Node;
+use pivx_primitives::merkle_tree::{
     read_commitment_tree, read_incremental_witness, write_commitment_tree,
     write_incremental_witness,
 };
@@ -64,9 +64,15 @@ pub fn tree_root_hex(tree: &SaplingTree) -> String {
 /// Call this immediately after appending a note we own — the witness tracks
 /// the Merkle path from that leaf to the root as future leaves are appended.
 ///
-/// Returns `None` if the tree is empty (no leaves committed yet).
+/// Returns the witness, or `None` if the tree is empty.
 pub fn witness_from_tree(tree: &SaplingTree) -> Option<SaplingWitness> {
-    SaplingWitness::from_tree(tree.clone())
+    // incrementalmerkletree 0.7: from_tree returns directly (not Option).
+    // It panics on empty tree, so we guard with size check.
+    if tree.size() == 0 {
+        None
+    } else {
+        Some(SaplingWitness::from_tree(tree.clone()))
+    }
 }
 
 /// Advance a witness by appending a new node.

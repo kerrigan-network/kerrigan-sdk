@@ -5,11 +5,11 @@
 ///
 /// Kerrigan coin type: 99888
 
-use sapling_crypto::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
-use sapling_crypto::PaymentAddress;
+use sapling::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
+use sapling::PaymentAddress;
 use zcash_keys::encoding;
 use zcash_keys::keys::sapling as sapling_keys;
-use zcash_primitives::zip32::AccountId;
+use pivx_primitives::zip32::AccountId;
 
 use super::network;
 use crate::params;
@@ -54,7 +54,7 @@ pub fn default_payment_address(extfvk: &ExtendedFullViewingKey) -> PaymentAddres
 /// Derive the nullifier deriving key from an extended full viewing key.
 pub fn nullifier_deriving_key(
     extfvk: &ExtendedFullViewingKey,
-) -> sapling_crypto::NullifierDerivingKey {
+) -> sapling::NullifierDerivingKey {
     extfvk.fvk.vk.nk
 }
 

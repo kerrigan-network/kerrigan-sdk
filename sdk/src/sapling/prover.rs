@@ -6,7 +6,7 @@
 ///
 /// Parameter files are the standard Zcash Sapling params (~50 MB total).
 
-use sapling_crypto::circuit::{OutputParameters, SpendParameters};
+use sapling::circuit::{OutputParameters, SpendParameters};
 use sha2::{Digest, Sha256};
 
 use crate::encoding;
