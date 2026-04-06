@@ -28,6 +28,13 @@ pub const BLOCK_TIME_SECONDS: u32 = 120;
 // -- Explorer --
 pub const EXPLORER_URL: &str = "https://explorer.kerrigan.network";
 
+// -- Shield bridge --
+pub const BRIDGE_URL: &str = "https://bridge.kerrigan.network";
+
+// -- Sapling parameter download --
+pub const SAPLING_OUTPUT_PARAMS_URL: &str = "https://download.z.cash/downloads/sapling-output.params";
+pub const SAPLING_SPEND_PARAMS_URL: &str = "https://download.z.cash/downloads/sapling-spend.params";
+
 // -- Transaction --
 pub const TX_VERSION: u32 = 1;
 pub const SIGHASH_ALL: u32 = 1;

@@ -5,6 +5,8 @@
 
 #[allow(dead_code)]
 mod network;
+mod sapling_params;
+mod sapling_sync;
 mod storage;
 mod sync_service;
 #[allow(dead_code)]
@@ -131,7 +133,6 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_sd
                         if r.new_tx_count == 1 { "" } else { "s" }));
                 }
             }
-            crate::storage::save_wallet(wallet_data)?;
         }
         Err(e) => {
             if let Some(s) = spinner {
@@ -140,6 +141,32 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_sd
         }
     }
 
+    // Shield sync (best-effort — don't fail the whole sync if bridge is down)
+    if wallet_data.sapling_extfvk.is_some() {
+        let shield_spinner = Spinner::start("Syncing shield");
+        match crate::sapling_sync::sync_shielded(wallet_data, |msg| {
+            shield_spinner.set_progress(0.0, Some(msg));
+        }) {
+            Ok(r) => {
+                if r.new_notes == 0 && r.spent == 0 {
+                    shield_spinner.finish_with("No new shield activity");
+                } else {
+                    shield_spinner.finish_with(&format!(
+                        "{} new note{}, {} spent",
+                        r.new_notes,
+                        if r.new_notes == 1 { "" } else { "s" },
+                        r.spent,
+                    ));
+                }
+            }
+            Err(e) => {
+                shield_spinner.finish_err(&format!("Shield sync: {e}"));
+                // Don't propagate — transparent sync succeeded
+            }
+        }
+    }
+
+    crate::storage::save_wallet(wallet_data)?;
     result
 }
 
