@@ -18,6 +18,7 @@ use crate::stream;
 pub struct AppState {
     pub rpc: RpcClient,
     pub index: RwLock<ShieldIndex>,
+    #[allow(dead_code)]
     pub index_path: String,
 }
 

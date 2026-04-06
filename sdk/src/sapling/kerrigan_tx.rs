@@ -6,7 +6,7 @@
 
 use sha2::{Sha256, Digest};
 
-use sapling::bundle::{Authorized, Bundle, GrothProofBytes};
+use sapling::bundle::{Authorized, Bundle};
 use sapling::builder::{InProgress, Proven, Unsigned};
 
 use crate::encoding;
@@ -95,7 +95,7 @@ pub fn compute_kerrigan_sighash_from_bundle(
             data.extend_from_slice(&spend.cv().to_bytes());
             data.extend_from_slice(&spend.anchor().to_bytes());
             data.extend_from_slice(&spend.nullifier().0);
-            data.extend_from_slice(&<[u8; 32]>::from(spend.rk().clone()));
+            data.extend_from_slice(&<[u8; 32]>::from(*spend.rk()));
             data.extend_from_slice(spend.zkproof());
         }
         sha256d(&data)
@@ -207,9 +207,9 @@ fn build_sapling_payload(bundle: &Bundle<Authorized, i64>) -> Result<Vec<u8>, St
         payload.extend_from_slice(&spend.cv().to_bytes());
         payload.extend_from_slice(&spend.anchor().to_bytes());
         payload.extend_from_slice(&spend.nullifier().0);
-        payload.extend_from_slice(&<[u8; 32]>::from(spend.rk().clone()));
+        payload.extend_from_slice(&<[u8; 32]>::from(*spend.rk()));
         payload.extend_from_slice(spend.zkproof());
-        let sig_bytes: [u8; 64] = spend.spend_auth_sig().clone().into();
+        let sig_bytes: [u8; 64] = (*spend.spend_auth_sig()).into();
         payload.extend_from_slice(&sig_bytes);
     }
 
@@ -229,7 +229,7 @@ fn build_sapling_payload(bundle: &Bundle<Authorized, i64>) -> Result<Vec<u8>, St
     payload.extend_from_slice(&bundle.value_balance().to_le_bytes());
 
     // Binding signature
-    let binding_bytes: [u8; 64] = bundle.authorization().binding_sig.clone().into();
+    let binding_bytes: [u8; 64] = bundle.authorization().binding_sig.into();
     payload.extend_from_slice(&binding_bytes);
 
     Ok(payload)
@@ -340,7 +340,7 @@ fn sign_transparent_input(
 /// SHA-256d (double SHA-256).
 fn sha256d(data: &[u8]) -> [u8; 32] {
     let first = Sha256::digest(data);
-    let second = Sha256::digest(&first);
+    let second = Sha256::digest(first);
     let mut result = [0u8; 32];
     result.copy_from_slice(&second);
     result

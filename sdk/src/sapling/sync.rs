@@ -287,6 +287,7 @@ pub fn encode_full_tx(raw_tx: &[u8]) -> Vec<u8> {
 ///
 /// Same logic as `notes::process_sapling_transaction` but works directly
 /// with extracted fields — no full transaction parsing needed.
+#[allow(clippy::too_many_arguments)]
 pub fn process_compact_transaction(
     tree: &mut SaplingTree,
     tx: &CompactTransaction,

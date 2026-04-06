@@ -1,3 +1,10 @@
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::if_same_then_else,
+    clippy::manual_div_ceil,
+    clippy::literal_string_with_formatting_args,
+)]
+
 /// Kerrigan Network light wallet CLI.
 ///
 /// "My stare alone would reduce you to ashes."

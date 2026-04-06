@@ -10,16 +10,12 @@
 use rand_core::OsRng;
 use sapling::builder::BundleType;
 use sapling::note_encryption::Zip212Enforcement;
-use sapling::prover::{OutputProver, SpendProver};
 use sapling::value::NoteValue;
-use sapling::zip32::ExtendedSpendingKey;
 use sapling::{Anchor, PaymentAddress};
 
-use crate::encoding;
 use crate::transaction::Utxo;
 use super::fees;
 use super::keys;
-use super::notes::SpendableNote;
 use super::prover::SaplingProver;
 
 // ---------------------------------------------------------------------------
@@ -46,7 +42,7 @@ pub fn build_shield(
     from_address: &str,
     to_shielded: &PaymentAddress,
     amount: u64,
-    block_height: u32,
+    _block_height: u32,
     prover: &SaplingProver,
 ) -> Result<SaplingTxResult, SaplingBuilderError> {
     if utxos.is_empty() {

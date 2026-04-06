@@ -1,4 +1,14 @@
-/// Kerrigan SDK — pure-Rust transparent wallet primitives.
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::manual_is_multiple_of,
+    clippy::large_const_arrays,
+    clippy::collapsible_if,
+    clippy::manual_div_ceil,
+    clippy::ptr_arg,
+    clippy::too_many_arguments,
+)]
+
+/// Kerrigan SDK — pure-Rust wallet primitives with Sapling shield support.
 ///
 /// No I/O, no network, no filesystem. Compiles to native, WASM, and mobile.
 ///

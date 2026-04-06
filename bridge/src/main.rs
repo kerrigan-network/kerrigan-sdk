@@ -1,3 +1,9 @@
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::manual_div_ceil,
+    clippy::literal_string_with_formatting_args,
+)]
+
 /// Kerrigan Bridge — shield sync server for light wallets.
 ///
 /// Connects to a Kerrigan full node via JSON-RPC, scans for Sapling
