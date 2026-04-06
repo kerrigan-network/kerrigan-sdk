@@ -119,6 +119,9 @@ pub struct TxHistoryEntry {
     pub block_height: Option<u64>,
     /// Number of confirmations at sync time.
     pub confirmations: Option<u64>,
+    /// Transaction type label (empty = transparent, "shield", "unshield", "private").
+    #[serde(default)]
+    pub tx_type: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +245,7 @@ impl SyncState {
             timestamp: tx.timestamp,
             block_height: tx.block_height,
             confirmations: tx.confirmations,
+            tx_type: String::new(), // transparent
         }
     }
 

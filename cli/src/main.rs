@@ -101,25 +101,34 @@ fn confirm(prompt: &str, expected: &str) -> bool {
 fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_sdk::sync::SyncResult, WalletError> {
     let spinner = Spinner::start("Syncing");
 
-    // We need to move the spinner into the closure, but the closure is called
-    // from sync_wallet_with_progress. Use a shared reference via Arc.
+    // Fetch shield data in a background thread while transparent syncs on main thread
+    let shield_fetch_handle = if wallet_data.sapling_extfvk.is_some() {
+        let start_block = if wallet_data.sapling_last_block > 0 {
+            wallet_data.sapling_last_block + 1
+        } else {
+            kerrigan_sdk::sapling::network::SAPLING_ACTIVATION_HEIGHT
+        };
+        Some(std::thread::spawn(move || {
+            crate::sapling_sync::fetch_shield_stream(start_block)
+        }))
+    } else {
+        None
+    };
+
+    // Transparent sync on main thread (in parallel with shield fetch)
     let spinner_ref = std::sync::Arc::new(spinner);
     let spinner_for_closure = spinner_ref.clone();
 
     let result = crate::sync_service::sync_wallet(wallet_data, move |done, total| {
         if total == 0 && done == 0 {
-            // Phase 1: fetching address info
             spinner_for_closure.set_progress(0.0, Some("Fetching address"));
         } else if done == 0 {
-            // Phase 2: address info fetched, about to start tx fetches
             spinner_for_closure.set_progress(0.0, Some("Syncing"));
         } else {
-            // Phase 3: fetching transactions
             spinner_for_closure.set_progress(done as f64 / total as f64, Some("Syncing"));
         }
     });
 
-    // Unwrap the Arc to get the spinner back
     let spinner = std::sync::Arc::try_unwrap(spinner_ref).ok();
 
     match &result {
@@ -140,28 +149,29 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_sd
         }
     }
 
-    // Shield sync (best-effort — don't fail the whole sync if bridge is down)
-    if wallet_data.sapling_extfvk.is_some() {
-        let shield_spinner = Spinner::start("Syncing shield");
-        match crate::sapling_sync::sync_shielded(wallet_data, |msg| {
-            shield_spinner.set_progress(0.0, Some(msg));
-        }) {
-            Ok(r) => {
-                if r.new_notes == 0 && r.spent == 0 {
-                    shield_spinner.finish_with("No new shield activity");
-                } else {
-                    shield_spinner.finish_with(&format!(
-                        "{} new note{}, {} spent",
-                        r.new_notes,
-                        if r.new_notes == 1 { "" } else { "s" },
-                        r.spent,
-                    ));
+    // Apply shield data (fetch already completed in background)
+    if let Some(handle) = shield_fetch_handle {
+        let shield_spinner = Spinner::start("Processing shield");
+        match handle.join() {
+            Ok(Ok(stream_bytes)) => {
+                match crate::sapling_sync::apply_shield_data(wallet_data, &stream_bytes) {
+                    Ok(r) => {
+                        if r.new_notes == 0 && r.spent == 0 {
+                            shield_spinner.finish_with("No new shield activity");
+                        } else {
+                            shield_spinner.finish_with(&format!(
+                                "{} new note{}, {} spent",
+                                r.new_notes,
+                                if r.new_notes == 1 { "" } else { "s" },
+                                r.spent,
+                            ));
+                        }
+                    }
+                    Err(e) => shield_spinner.finish_err(&format!("Shield sync: {e}")),
                 }
             }
-            Err(e) => {
-                shield_spinner.finish_err(&format!("Shield sync: {e}"));
-                // Don't propagate — transparent sync succeeded
-            }
+            Ok(Err(e)) => shield_spinner.finish_err(&format!("Shield fetch: {e}")),
+            Err(_) => shield_spinner.finish_err("Shield fetch thread panicked"),
         }
     }
 
@@ -550,8 +560,17 @@ fn send_shield(
     );
     println!();
 
+    // Log to history
+    wallet_data.history.insert(0, TxHistoryEntry {
+        txid: txid.clone(),
+        net_amount: -(amount as i64),
+        timestamp: None,
+        block_height: None,
+        confirmations: None,
+        tx_type: "shield".to_string(),
+    });
+
     // Update wallet state — remove spent UTXOs
-    // (We spent from transparent, so remove those UTXOs)
     let spent_amount = amount + fee;
     let mut remaining = spent_amount;
     wallet_data.utxos.retain(|u| {
@@ -638,7 +657,15 @@ fn send_sapling(
     println!("  {} {}", term::dim("TXID:"), term::purple(&txid));
     println!();
 
-    // Mark spent notes
+    // Log to history + mark spent notes
+    wallet_data.history.insert(0, TxHistoryEntry {
+        txid: txid.clone(),
+        net_amount: -(amount as i64),
+        timestamp: None,
+        block_height: None,
+        confirmations: None,
+        tx_type: "private".to_string(),
+    });
     wallet_data.unspent_notes.retain(|n| !result.nullifiers.contains(&n.nullifier));
     crate::storage::save_wallet(wallet_data)?;
 
@@ -702,6 +729,14 @@ fn send_unshield(
     println!("  {} {}", term::dim("TXID:"), term::purple(&txid));
     println!();
 
+    wallet_data.history.insert(0, TxHistoryEntry {
+        txid: txid.clone(),
+        net_amount: amount as i64, // positive — funds coming back to transparent
+        timestamp: None,
+        block_height: None,
+        confirmations: None,
+        tx_type: "unshield".to_string(),
+    });
     wallet_data.unspent_notes.retain(|n| !result.nullifiers.contains(&n.nullifier));
     crate::storage::save_wallet(wallet_data)?;
 
@@ -825,7 +860,15 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
             .map(format_timestamp)
             .unwrap_or_else(|| "—".into());
 
-        println!("  {}  {}  {}  {}",
+        let type_label = match entry.tx_type.as_str() {
+            "shield" => term::yellow("SH"),
+            "unshield" => term::yellow("UN"),
+            "private" => term::purple("PR"),
+            _ => term::dim("TX"),
+        };
+
+        println!("  {} {}  {}  {}  {}",
+            type_label,
             term::purple(&format!("{:<txid_width$}", txid_display)),
             amount_str,
             term::dim(&confs_padded),
