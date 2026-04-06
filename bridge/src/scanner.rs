@@ -5,7 +5,10 @@
 /// Chains through blocks via `nextblockhash` (one getblock call per block).
 
 use kerrigan_sdk::encoding;
-use kerrigan_sdk::sapling::sync::{RawShieldBlock, BlockEntry};
+use kerrigan_sdk::sapling::sync::{
+    CompactSaplingOutput, CompactTransaction, RawShieldBlock, BlockEntry,
+};
+use zcash_note_encryption::ENC_CIPHERTEXT_SIZE;
 
 use crate::rpc::RpcClient;
 
@@ -57,7 +60,14 @@ fn scan_block_inner(
 
         // Check for Sapling tx header (version 3, type 10)
         if tx_bytes.len() >= 4 && tx_bytes[..4] == SAPLING_TX_HEADER {
-            entries.push(BlockEntry::FullTx(tx_bytes));
+            match parse_kerrigan_sapling_tx(&tx_bytes) {
+                Ok(Some(compact)) => entries.push(BlockEntry::CompactTx(compact)),
+                Ok(None) => {} // No shielded data in payload
+                Err(e) => {
+                    eprintln!("  Warning: parse Kerrigan tx: {e} — sending as raw");
+                    entries.push(BlockEntry::FullTx(tx_bytes));
+                }
+            }
         }
     }
 
@@ -161,6 +171,124 @@ pub fn scan_range(
     }
 
     Ok(shield_blocks)
+}
+
+// ---------------------------------------------------------------------------
+// Kerrigan type 10 raw transaction parser
+// ---------------------------------------------------------------------------
+
+/// Parse a raw Kerrigan type 10 transaction and extract compact Sapling data.
+///
+/// Format: header(4) + vin + vout + locktime(4) + extraPayload
+/// Payload: nVersion(2) + spends + outputs + valueBalance(8) + bindingSig(64)
+fn parse_kerrigan_sapling_tx(data: &[u8]) -> Result<Option<CompactTransaction>, String> {
+    let mut pos = 4; // skip header
+
+    // Skip vin
+    let (vin_count, bytes_read) = read_compact_size(data, pos)?;
+    pos += bytes_read;
+    for _ in 0..vin_count {
+        pos += 32 + 4; // prevout: txid + vout
+        let (script_len, br) = read_compact_size(data, pos)?;
+        pos += br + script_len; // scriptSig
+        pos += 4; // sequence
+        if pos > data.len() { return Err("truncated vin".into()); }
+    }
+
+    // Skip vout
+    let (vout_count, bytes_read) = read_compact_size(data, pos)?;
+    pos += bytes_read;
+    for _ in 0..vout_count {
+        pos += 8; // value
+        let (script_len, br) = read_compact_size(data, pos)?;
+        pos += br + script_len; // scriptPubKey
+        if pos > data.len() { return Err("truncated vout".into()); }
+    }
+
+    // Skip nLockTime
+    pos += 4;
+
+    // Read extra payload
+    let (payload_len, bytes_read) = read_compact_size(data, pos)?;
+    pos += bytes_read;
+
+    if pos + payload_len > data.len() {
+        return Err("truncated payload".into());
+    }
+
+    let payload = &data[pos..pos + payload_len];
+    parse_sapling_payload(payload)
+}
+
+/// Parse the Sapling extra payload to extract compact data.
+fn parse_sapling_payload(data: &[u8]) -> Result<Option<CompactTransaction>, String> {
+    let mut pos = 2; // skip payload nVersion (u16)
+
+    // Spend descriptions
+    let (num_spends, br) = read_compact_size(data, pos)?;
+    pos += br;
+
+    let mut nullifiers = Vec::new();
+    for _ in 0..num_spends {
+        if pos + 384 > data.len() { return Err("truncated spend".into()); }
+        // cv(32) + anchor(32) + nullifier(32) + rk(32) + proof(192) + sig(64)
+        let mut nf = [0u8; 32];
+        nf.copy_from_slice(&data[pos + 64..pos + 96]); // nullifier at offset 64
+        nullifiers.push(nf);
+        pos += 384;
+    }
+
+    // Output descriptions
+    let (num_outputs, br) = read_compact_size(data, pos)?;
+    pos += br;
+
+    let mut outputs = Vec::new();
+    for _ in 0..num_outputs {
+        if pos + 948 > data.len() { return Err("truncated output".into()); }
+        // cv(32) + cmu(32) + epk(32) + enc(580) + out(80) + proof(192)
+        let mut cmu = [0u8; 32];
+        cmu.copy_from_slice(&data[pos + 32..pos + 64]); // cmu at offset 32 (after cv)
+
+        let mut epk = [0u8; 32];
+        epk.copy_from_slice(&data[pos + 64..pos + 96]); // epk at offset 64
+
+        let mut enc_ciphertext = [0u8; ENC_CIPHERTEXT_SIZE];
+        enc_ciphertext.copy_from_slice(&data[pos + 96..pos + 96 + ENC_CIPHERTEXT_SIZE]);
+
+        outputs.push(CompactSaplingOutput { cmu, epk, enc_ciphertext });
+        pos += 948;
+    }
+
+    if nullifiers.is_empty() && outputs.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(CompactTransaction { nullifiers, outputs }))
+}
+
+/// Read a Bitcoin compact size (varint) from data at offset.
+/// Returns (value, bytes_consumed).
+fn read_compact_size(data: &[u8], pos: usize) -> Result<(usize, usize), String> {
+    if pos >= data.len() { return Err("read past end".into()); }
+    match data[pos] {
+        n if n < 253 => Ok((n as usize, 1)),
+        253 => {
+            if pos + 3 > data.len() { return Err("truncated varint".into()); }
+            Ok((u16::from_le_bytes([data[pos+1], data[pos+2]]) as usize, 3))
+        }
+        254 => {
+            if pos + 5 > data.len() { return Err("truncated varint".into()); }
+            Ok((u32::from_le_bytes([data[pos+1], data[pos+2], data[pos+3], data[pos+4]]) as usize, 5))
+        }
+        255 => {
+            if pos + 9 > data.len() { return Err("truncated varint".into()); }
+            Ok((u64::from_le_bytes([
+                data[pos+1], data[pos+2], data[pos+3], data[pos+4],
+                data[pos+5], data[pos+6], data[pos+7], data[pos+8],
+            ]) as usize, 9))
+        }
+        _ => unreachable!(),
+    }
 }
 
 // ---------------------------------------------------------------------------
