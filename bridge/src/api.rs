@@ -40,12 +40,14 @@ pub async fn get_shield_data(
     Query(query): Query<ShieldDataQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let start = query.start_block.unwrap_or(500);
+    eprintln!("  [shielddata] Request startBlock={start}");
 
     // Get shield block heights from the index
     let heights = {
         let index = state.index.read().await;
         index.heights_from(start)
     };
+    eprintln!("  [shielddata] {} shield blocks to serve", heights.len());
 
     if heights.is_empty() {
         // Return empty binary response
@@ -123,9 +125,16 @@ pub async fn send_raw_transaction(
     body: String,
 ) -> Result<String, (StatusCode, String)> {
     let hex = body.trim();
-    let txid = state
-        .rpc
-        .send_raw_transaction(hex)
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("broadcast error: {e}")))?;
-    Ok(txid)
+    eprintln!("  [broadcast] Received tx hex ({} bytes)", hex.len());
+
+    match state.rpc.send_raw_transaction(hex) {
+        Ok(txid) => {
+            eprintln!("  [broadcast] Success: {txid}");
+            Ok(txid)
+        }
+        Err(e) => {
+            eprintln!("  [broadcast] FAILED: {e}");
+            Err((StatusCode::BAD_GATEWAY, format!("broadcast error: {e}")))
+        }
+    }
 }

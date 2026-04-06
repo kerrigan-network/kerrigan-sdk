@@ -39,13 +39,21 @@ impl RpcClient {
             "params": params,
         });
 
-        let resp = self
+        let resp = match self
             .agent
             .post(&self.url)
             .set("Content-Type", "application/json")
             .set("Authorization", &format!("Basic {}", self.auth))
             .send_json(&body)
-            .map_err(|e| RpcError::Transport(format!("{e}")))?;
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::Status(code, resp)) => {
+                // Non-2xx response — extract the body for error details
+                let body = resp.into_string().unwrap_or_default();
+                return Err(RpcError::Node(format!("HTTP {code}: {body}")));
+            }
+            Err(e) => return Err(RpcError::Transport(format!("{e}"))),
+        };
 
         let json: Value = resp
             .into_json()
