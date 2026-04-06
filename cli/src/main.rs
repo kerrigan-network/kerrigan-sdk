@@ -67,9 +67,9 @@ fn print_usage() {
     println!("  {}            Generate a new wallet", term::purple("create"));
     println!("  {}            Import wallet from mnemonic", term::purple("import"));
     println!("  {}            Display wallet mnemonic", term::purple("export"));
-    println!("  {}           Show receiving address", term::purple("address"));
-    println!("  {}           Sync and show balance", term::purple("balance"));
-    println!("  {} {} {} Send KRGN ({} to send everything)", term::purple("send"), term::dim("<addr>"), term::dim("<amt|max>"), term::bold("max"));
+    println!("  {}           Show public + private addresses", term::purple("address"));
+    println!("  {}           Sync and show balances", term::purple("balance"));
+    println!("  {} {} {} {} Send KRGN", term::purple("send"), term::dim("<public|private>"), term::dim("<addr>"), term::dim("<amt|max>"));
     println!("  {} {}  Transaction history", term::purple("history"), term::dim("[page|all]"));
     println!("  {}              Force full resync", term::purple("sync"));
     println!("  {}           Show version", term::purple("version"));
@@ -242,7 +242,12 @@ fn cmd_export() -> Result<(), WalletError> {
 
 fn cmd_address() -> Result<(), WalletError> {
     let wallet_data = crate::storage::load_wallet()?;
-    println!("{}", term::purple_bold(&wallet_data.address));
+    println!();
+    println!("  {} {}", term::dim("Public: "), term::purple_bold(&wallet_data.address));
+    if let Some(ref addr) = wallet_data.sapling_address {
+        println!("  {} {}", term::dim("Private:"), term::purple_bold(addr));
+    }
+    println!();
     Ok(())
 }
 
@@ -252,16 +257,37 @@ fn cmd_balance() -> Result<(), WalletError> {
     println!();
     let _ = sync_with_spinner(&mut wallet_data);
 
+    let public_bal = wallet_data.balance_display();
+    let private_bal = wallet_data.shielded_balance_display();
+
     println!();
     println!("  {} {}",
-        term::dim("Balance:"),
-        term::green_bold(&format!("{} KRGN", wallet_data.balance_display())),
+        term::dim("Public: "),
+        term::green_bold(&format!("{public_bal} KRGN")),
     );
+    println!("  {} {}",
+        term::dim("Private:"),
+        term::green_bold(&format!("{private_bal} KRGN")),
+    );
+
+    let total = wallet_data.balance().saturating_add(wallet_data.shielded_balance());
+    if total != wallet_data.balance() && total != wallet_data.shielded_balance() {
+        println!("  {} {}",
+            term::dim("Total:  "),
+            term::bold(&format!("{} KRGN", wallet::format_krgn(total))),
+        );
+    }
 
     if wallet_data.utxos.len() > 1 {
         println!("  {} {} UTXOs",
             term::dim("Coins: "),
             wallet_data.utxos.len(),
+        );
+    }
+    if !wallet_data.unspent_notes.is_empty() {
+        println!("  {} {} notes",
+            term::dim("Notes: "),
+            wallet_data.unspent_notes.len(),
         );
     }
     println!();
@@ -270,30 +296,52 @@ fn cmd_balance() -> Result<(), WalletError> {
 }
 
 fn cmd_send(args: &[String]) -> Result<(), WalletError> {
-    if args.len() < 2 {
+    if args.len() < 3 {
         println!();
-        println!("  {} kerrigan-wallet {} {} {}",
+        println!("  {} kerrigan-wallet {} {} {} {}",
             term::bold("Usage:"),
             term::purple("send"),
+            term::dim("<public|private>"),
             term::dim("<address>"),
             term::dim("<amount|max>"),
         );
-        println!("  {} amount in KRGN (e.g., {}, {}, or {})",
-            term::dim("       "),
-            term::bold("1.5"),
-            term::bold("0.001"),
-            term::bold("max"),
+        println!();
+        println!("  {} kerrigan-wallet send {} KAddr... 1.5",
+            term::dim("Public send: "),
+            term::bold("public"),
+        );
+        println!("  {} kerrigan-wallet send {} ks1Addr... 1.5 \"memo\"",
+            term::dim("Private send:"),
+            term::bold("private"),
         );
         println!();
         return Ok(());
     }
 
-    let to_address = &args[0];
-    let amount_str = &args[1];
+    let source = args[0].to_lowercase();
+    let to_address = &args[1];
+    let amount_str = &args[2];
+    let _memo = args.get(3).map(|s| s.as_str()).unwrap_or("");
     let is_max = amount_str.eq_ignore_ascii_case("max");
 
-    keys::validate_address(to_address)
-        .map_err(|e| WalletError::Transaction(format!("invalid address: {e}")))?;
+    // Determine the flow
+    let from_private = match source.as_str() {
+        "private" => true,
+        "public" => false,
+        _ => return Err(WalletError::Transaction(
+            format!("first argument must be 'public' or 'private', got '{source}'")
+        )),
+    };
+
+    let to_shielded = to_address.starts_with("ks");
+    let to_transparent = !to_shielded;
+
+    // Validate destination address
+    if to_transparent {
+        keys::validate_address(to_address)
+            .map_err(|e| WalletError::Transaction(format!("invalid address: {e}")))?;
+    }
+    // Shielded address validation happens inside the SDK builder
 
     if !is_max {
         let amount = wallet::parse_krgn(amount_str)?;
@@ -307,43 +355,66 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
     println!();
     let _ = sync_with_spinner(&mut wallet_data);
 
+    // Route to the correct send flow
+    match (from_private, to_shielded) {
+        (false, false) => {
+            // Public → Public (transparent send)
+            send_transparent(&mut wallet_data, to_address, amount_str, is_max)
+        }
+        (false, true) => {
+            // Public → Private (shielding)
+            // TODO: implement shielding flow
+            Err(WalletError::Other("Shielding (public → private) not yet implemented".into()))
+        }
+        (true, false) => {
+            // Private → Public (unshielding)
+            // TODO: implement unshielding flow
+            Err(WalletError::Other("Unshielding (private → public) not yet implemented".into()))
+        }
+        (true, true) => {
+            // Private → Private (shield-to-shield)
+            // TODO: implement shield send flow
+            Err(WalletError::Other("Shield send (private → private) not yet implemented".into()))
+        }
+    }
+}
+
+/// Transparent send — existing public-to-public flow.
+fn send_transparent(
+    wallet_data: &mut WalletData,
+    to_address: &str,
+    amount_str: &str,
+    is_max: bool,
+) -> Result<(), WalletError> {
     let (signed, amount) = if is_max {
-        let signed = kerrigan_sdk::wallet::prepare_send_max(&wallet_data, to_address)?;
-        // send_amount = total_input - fee (computed inside build_max_transaction)
+        let signed = kerrigan_sdk::wallet::prepare_send_max(wallet_data, to_address)?;
         let amount = signed.tx.outputs.first()
             .map(|o| o.value)
             .unwrap_or(0);
         (signed, amount)
     } else {
         let amount = wallet::parse_krgn(amount_str)?;
-        let signed = kerrigan_sdk::wallet::prepare_send(&wallet_data, to_address, amount)?;
+        let signed = kerrigan_sdk::wallet::prepare_send(wallet_data, to_address, amount)?;
         (signed, amount)
     };
 
     println!();
     term::header("Transaction");
     println!();
+    println!("   {}  {}", term::dim("Type:"), term::bold("Public"));
     println!("   {}  {}", term::dim("To:"), term::bold(to_address));
     println!("   {}  {} KRGN{}",
         term::dim("Amount:"),
         term::green_bold(&wallet::format_krgn(amount)),
         if is_max { term::dim(" (max)").to_string() } else { String::new() },
     );
-    println!("   {}  {} KRGN{}",
+    println!("   {}  {} KRGN",
         term::dim("Fee:"),
         term::yellow(&wallet::format_krgn(signed.fee)),
-        if is_max { term::dim(" (internal)").to_string() } else { String::new() },
     );
     println!("   {}  {} KRGN",
         term::dim("Total:"),
         term::bold(&wallet::format_krgn(amount + signed.fee)),
-    );
-    println!();
-
-    let remaining = wallet_data.balance().saturating_sub(amount + signed.fee);
-    println!("   {}  {} KRGN",
-        term::dim("Remaining:"),
-        if remaining == 0 { term::dim("0.00000000") } else { wallet::format_krgn(remaining) },
     );
     println!();
 
@@ -353,7 +424,7 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
     }
 
     let spinner = Spinner::start("Broadcasting");
-    let txid = crate::broadcast_and_finalize(&mut wallet_data, &signed);
+    let txid = crate::broadcast_and_finalize(wallet_data, &signed);
     match txid {
         Ok(txid) => {
             spinner.finish_with("Transaction sent!");

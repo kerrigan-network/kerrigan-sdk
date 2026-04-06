@@ -19,6 +19,8 @@ use crate::bip39;
 use crate::encoding::{hex_encode, hex_decode};
 use crate::keys;
 use crate::params;
+use crate::sapling;
+use crate::sapling::notes::SerializedNote;
 use crate::sync;
 use crate::transaction::{self, Utxo, SignedTransaction};
 
@@ -87,6 +89,32 @@ pub struct WalletData {
 
     /// Last known block height at sync time.
     pub last_sync_height: u64,
+
+    // -- Sapling shielded state --
+
+    /// Encoded Sapling extended spending key (bech32).
+    #[serde(default)]
+    pub sapling_extsk: Option<String>,
+
+    /// Encoded Sapling extended full viewing key (bech32).
+    #[serde(default)]
+    pub sapling_extfvk: Option<String>,
+
+    /// Sapling payment address (`ks1...`).
+    #[serde(default)]
+    pub sapling_address: Option<String>,
+
+    /// Hex-encoded Sapling commitment tree.
+    #[serde(default)]
+    pub commitment_tree: Option<String>,
+
+    /// Unspent shielded notes.
+    #[serde(default)]
+    pub unspent_notes: Vec<SerializedNote>,
+
+    /// Last synced shield block height.
+    #[serde(default)]
+    pub sapling_last_block: u32,
 }
 
 /// Serde helper: Vec<u8> as hex string.
@@ -132,6 +160,21 @@ impl WalletData {
         keys::derive_keypair(&self.seed).map_err(|e| WalletError::Other(e.to_string()))
     }
 
+    /// Get the shielded balance in satoshis (sum of unspent notes).
+    pub fn shielded_balance(&self) -> u64 {
+        self.unspent_notes.iter().fold(0u64, |a, n| a.saturating_add(n.value))
+    }
+
+    /// Get the shielded balance formatted as KRGN string.
+    pub fn shielded_balance_display(&self) -> String {
+        format_krgn(self.shielded_balance())
+    }
+
+    /// Get the shielded address, if derived.
+    pub fn sapling_address(&self) -> Option<&str> {
+        self.sapling_address.as_deref()
+    }
+
     /// Remove spent UTXOs after a send.
     pub fn finalize_send(&mut self, spent: &[(String, u32)]) {
         self.utxos.retain(|u| {
@@ -163,6 +206,12 @@ fn wallet_from_mnemonic(mnemonic: &str) -> Result<WalletData, WalletError> {
     let kp = keys::derive_keypair(&seed)
         .map_err(|e| WalletError::Other(e.to_string()))?;
 
+    // Derive Sapling shielded keys from the same seed
+    let sapling_extsk = sapling::keys::default_spending_key(&seed)
+        .map_err(|e| WalletError::Other(format!("sapling key derivation: {e}")))?;
+    let sapling_extfvk = sapling::keys::full_viewing_key(&sapling_extsk);
+    let sapling_addr = sapling::keys::default_payment_address(&sapling_extfvk);
+
     Ok(WalletData {
         version: params::WALLET_VERSION,
         seed,
@@ -173,6 +222,13 @@ fn wallet_from_mnemonic(mnemonic: &str) -> Result<WalletData, WalletError> {
         sync_state: None,
         history: Vec::new(),
         last_sync_height: 0,
+
+        sapling_extsk: Some(sapling::keys::encode_extsk(&sapling_extsk)),
+        sapling_extfvk: Some(sapling::keys::encode_extfvk(&sapling_extfvk)),
+        sapling_address: Some(sapling::keys::encode_payment_address(&sapling_addr)),
+        commitment_tree: None,
+        unspent_notes: Vec::new(),
+        sapling_last_block: 0,
     })
 }
 
@@ -251,6 +307,13 @@ pub fn encrypt_wallet(data: &WalletData, key: &[u8; 32]) -> WalletData {
         sync_state: data.sync_state.clone(),
         history: data.history.clone(),
         last_sync_height: data.last_sync_height,
+
+        sapling_extsk: data.sapling_extsk.clone(),
+        sapling_extfvk: data.sapling_extfvk.clone(),
+        sapling_address: data.sapling_address.clone(),
+        commitment_tree: data.commitment_tree.clone(),
+        unspent_notes: data.unspent_notes.clone(),
+        sapling_last_block: data.sapling_last_block,
     }
 }
 
