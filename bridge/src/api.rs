@@ -25,10 +25,27 @@ pub struct AppState {
 // GET /getshielddata?startBlock=N
 // ---------------------------------------------------------------------------
 
+/// Stream format for the compact shield protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamFormat {
+    /// Compact (default): strips proofs/sigs, keeps out_ciphertext for sender
+    /// recovery. Safe for imports, resyncs, and multi-device. (724 bytes/output)
+    #[default]
+    Compact,
+    /// Compact+: additionally strips out_ciphertext for rapid bootstrap of
+    /// freshly created wallets with no history to recover. (644 bytes/output)
+    #[serde(rename = "compactplus")]
+    CompactPlus,
+}
+
 #[derive(Deserialize)]
 pub struct ShieldDataQuery {
     #[serde(rename = "startBlock")]
     pub start_block: Option<u32>,
+    /// Stream format: "compact" (default) or "compactplus" (new wallet bootstrap)
+    #[serde(default)]
+    pub format: StreamFormat,
 }
 
 /// Serve compact shield data as a binary stream.
@@ -40,7 +57,8 @@ pub async fn get_shield_data(
     Query(query): Query<ShieldDataQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let start = query.start_block.unwrap_or(500);
-    eprintln!("  [shielddata] Request startBlock={start}");
+    let format = query.format;
+    eprintln!("  [shielddata] Request startBlock={start} format={format:?}");
 
     // Get shield block heights from the index
     let heights = {
@@ -75,7 +93,7 @@ pub async fn get_shield_data(
             }
         }
 
-        Ok(stream::encode_shield_stream(&blocks))
+        Ok(stream::encode_shield_stream(&blocks, format))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task error: {e}")))?

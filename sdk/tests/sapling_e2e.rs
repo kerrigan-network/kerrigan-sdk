@@ -258,6 +258,7 @@ fn compact_protocol_compact_tx_roundtrip() {
             cmu: [0x11; 32],
             epk: [0x22; 32],
             enc_ciphertext: [0x33; ENC_CIPHERTEXT_SIZE],
+            out_ciphertext: Some([0x44; 80]),
         }],
     };
 
@@ -273,6 +274,7 @@ fn compact_protocol_compact_tx_roundtrip() {
             assert_eq!(ct.outputs.len(), 1);
             assert_eq!(ct.outputs[0].cmu, [0x11; 32]);
             assert_eq!(ct.outputs[0].epk, [0x22; 32]);
+            assert_eq!(ct.outputs[0].out_ciphertext, Some([0x44; 80]));
         }
         _ => panic!("Expected CompactTx"),
     }
@@ -319,6 +321,7 @@ fn compact_output_implements_shielded_output() {
         cmu: [0x11; 32],
         epk: [0x22; 32],
         enc_ciphertext: [0x33; ENC_CIPHERTEXT_SIZE],
+        out_ciphertext: None,
     };
     // Just verify the trait methods compile and return expected values
     use zcash_note_encryption::{ShieldedOutput, EphemeralKeyBytes};

@@ -254,7 +254,10 @@ fn parse_sapling_payload(data: &[u8]) -> Result<Option<CompactTransaction>, Stri
         let mut enc_ciphertext = [0u8; ENC_CIPHERTEXT_SIZE];
         enc_ciphertext.copy_from_slice(&data[pos + 96..pos + 96 + ENC_CIPHERTEXT_SIZE]);
 
-        outputs.push(CompactSaplingOutput { cmu, epk, enc_ciphertext });
+        let mut out_ciphertext = [0u8; 80];
+        out_ciphertext.copy_from_slice(&data[pos + 96 + ENC_CIPHERTEXT_SIZE..pos + 96 + ENC_CIPHERTEXT_SIZE + 80]);
+
+        outputs.push(CompactSaplingOutput { cmu, epk, enc_ciphertext, out_ciphertext: Some(out_ciphertext) });
         pos += 948;
     }
 
