@@ -402,9 +402,9 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         (true, false) => {
             // Private → Public (unshielding)
             let amount = if is_max {
-                // Max: all notes → transparent output, no sapling change
-                let fee = kerrigan_sdk::sapling::fees::sapling_fee(
-                    wallet_data.unspent_notes.len(), 0
+                // Max: all notes consumed, builder uses unshield_fee (1 sapling change)
+                let fee = kerrigan_sdk::sapling::fees::unshield_fee(
+                    wallet_data.unspent_notes.len()
                 );
                 wallet_data.shielded_balance().saturating_sub(fee)
             } else {
@@ -415,9 +415,9 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
         (true, true) => {
             // Private → Private (shield-to-shield)
             let amount = if is_max {
-                // Max: all notes → 1 output (no change)
-                let fee = kerrigan_sdk::sapling::fees::sapling_fee(
-                    wallet_data.unspent_notes.len(), 1
+                // Max: all notes consumed, builder uses shield_send_fee (2 outputs)
+                let fee = kerrigan_sdk::sapling::fees::shield_send_fee(
+                    wallet_data.unspent_notes.len()
                 );
                 wallet_data.shielded_balance().saturating_sub(fee)
             } else {
