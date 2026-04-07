@@ -795,6 +795,17 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
         let _ = sync_with_spinner(&mut wallet_data);
     }
 
+    // Sort: pending (no confirmations) first, then by block height descending
+    wallet_data.history.sort_by(|a, b| {
+        let a_confs = a.confirmations.unwrap_or(0);
+        let b_confs = b.confirmations.unwrap_or(0);
+        let a_pending = a_confs == 0;
+        let b_pending = b_confs == 0;
+        // Pending first, then by block height descending (higher = newer)
+        b_pending.cmp(&a_pending)
+            .then_with(|| b.block_height.unwrap_or(0).cmp(&a.block_height.unwrap_or(0)))
+    });
+
     let history = &wallet_data.history;
     if history.is_empty() {
         println!("  {}", term::dim("No transactions yet."));
@@ -890,19 +901,6 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
     }
 
     term::divider(divider_width);
-    println!("  {} {} KRGN  {} {} UTXOs",
-        term::dim("Balance:"),
-        term::green_bold(&wallet_data.balance_display()),
-        term::dim("│"),
-        wallet_data.utxos.len(),
-    );
-
-    if wallet_data.last_sync_height > 0 {
-        println!("  {} block {}",
-            term::dim("Synced: "),
-            wallet_data.last_sync_height,
-        );
-    }
     println!();
 
     // Pagination hint
