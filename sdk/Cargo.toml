@@ -1,6 +1,6 @@
 [package]
 name = "kerrigan-sdk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Kerrigan Network SDK — pure-Rust wallet primitives with Sapling shield support"
 license = "MIT"
