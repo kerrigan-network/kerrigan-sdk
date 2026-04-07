@@ -2,7 +2,11 @@
 
 Pure-Rust wallet primitives for the Kerrigan Network. No I/O, no network, no filesystem — compiles to native, WASM, and mobile.
 
+Full Sapling shielded transaction support with Kerrigan-native serialization.
+
 ## What's inside
+
+### Transparent
 
 | Module | Purpose |
 |--------|---------|
@@ -17,94 +21,115 @@ Pure-Rust wallet primitives for the Kerrigan Network. No I/O, no network, no fil
 | `sync` | UTXO derivation from transaction data (pure logic) |
 | `wallet` | Wallet state, symmetric encryption, send preparation |
 
+### Sapling (shielded)
+
+| Module | Purpose |
+|--------|---------|
+| `sapling::network` | Kerrigan Sapling constants (HRP `ks`, activation height 500) |
+| `sapling::keys` | ZIP32 key derivation, bech32 encoding, payment addresses |
+| `sapling::tree` | Commitment tree operations, hex serialization, witnesses |
+| `sapling::notes` | Note types, decryption, transaction processing |
+| `sapling::fees` | Sapling fee calculation (Kerrigan formula) |
+| `sapling::prover` | Proving parameter types and SHA-256 verification |
+| `sapling::builder` | Sapling transaction construction (shield, unshield, private send) |
+| `sapling::kerrigan_tx` | Kerrigan type 10 serialization and custom sighash |
+| `sapling::sync` | Compact binary stream parser and shield block processing |
+
 ## Quick start
 
 ```rust
-use kerrigan_sdk::{bip39, keys, wallet, sync};
+use kerrigan_sdk::{bip39, keys, wallet, sapling};
 
-// Create a wallet
+// Create a wallet (transparent + shielded keys derived automatically)
 let data = wallet::create_wallet_data().unwrap();
-println!("Address: {}", data.address);     // K...
-println!("Mnemonic: {}", data.mnemonic());  // 24 words
+println!("Public:  {}", data.address);                  // K...
+println!("Private: {}", data.sapling_address.unwrap()); // ks1...
+println!("Mnemonic: {}", data.mnemonic());              // 24 words
 
 // Import from mnemonic
 let data = wallet::import_wallet_data("abandon abandon ... about").unwrap();
 
-// Build a transaction
+// Build a transparent transaction
 let signed = wallet::prepare_send(&data, "KDestination...", 50_000_000).unwrap();
-println!("TX hex: {}", signed.tx_hex);  // broadcast however you want
-println!("Fee: {} sat", signed.fee);
+println!("TX hex: {}", signed.tx_hex);
 
-// Send max (entire balance minus fee)
-let signed = wallet::prepare_send_max(&data, "KDestination...").unwrap();
-
-// Sync (caller provides transaction data — SDK doesn't do HTTP)
-let tx_data: Vec<sync::TxData> = fetch_from_your_source();
-let result = sync::process_transactions(None, &tx_data, &data.address, &[]);
-println!("Balance: {} sat", result.balance);
-println!("UTXOs: {}", result.utxos.len());
+// Derive shielded address from seed
+let addr = sapling::keys::derive_shielded_address(&data.seed).unwrap();
+println!("Shielded: {}", addr); // ks1...
 
 // Encrypt for storage (caller provides key)
 let key: [u8; 32] = derive_your_encryption_key();
 let encrypted = wallet::encrypt_wallet(&data, &key);
 let json = serde_json::to_string(&encrypted).unwrap();
-// ... save json however you want (file, IndexedDB, etc.)
-
-// Decrypt after loading
-let loaded: wallet::WalletData = serde_json::from_str(&json).unwrap();
-let decrypted = wallet::decrypt_wallet(loaded, &key).unwrap();
 ```
+
+## Sapling transaction building
+
+The SDK uses a three-step Kerrigan-native build flow:
+
+1. **Build** unauthorized bundle with `sapling::Builder` (Groth16 proofs generated)
+2. **Compute** Kerrigan sighash (differs from Zcash and PIVX — includes `nType` and `payloadVersion`)
+3. **Apply** signatures with the correct sighash
+
+Transactions are serialized in Kerrigan's type 10 extra payload format (`0x03000a00` header), not the Zcash v4 format.
+
+```rust
+// Shielding (transparent → sapling)
+let result = sapling::builder::build_shield(
+    &utxos, &privkey, &pubkey, &address, &to_shielded, amount, height, &prover,
+).unwrap();
+
+// Shield-to-shield (private → private)
+let result = sapling::builder::build_sapling_send(
+    &notes, &extsk, &to_addr, amount, memo, &prover,
+).unwrap();
+
+// Unshielding (sapling → transparent)
+let result = sapling::builder::build_unshield(
+    &notes, &extsk, "KAddress...", amount, &prover,
+).unwrap();
+```
+
+## Compact sync protocol
+
+The SDK defines a binary wire format for efficient shield sync:
+
+| Packet type | Contents | Size per output |
+|-------------|----------|-----------------|
+| `0x03` Full tx | Raw transaction bytes | 948 bytes |
+| `0x04` Compact | cmu + epk + enc_ciphertext only | 644 bytes |
+
+Compact mode strips proofs and signatures that light wallets never verify (42-62% smaller). The `CompactSaplingOutput` type implements `ShieldedOutput` so `try_note_decryption` works directly on compact data.
 
 ## Design philosophy
 
 The SDK **never touches the outside world**. No HTTP, no filesystem, no terminal. The caller provides data in, the SDK processes it and returns results.
 
-This means the same SDK works everywhere:
-
 | Platform | Data source | Storage | Encryption key |
 |----------|------------|---------|----------------|
 | CLI | `ureq` HTTP | Filesystem | Machine UID |
 | WASM | `fetch()` | IndexedDB | User passphrase |
-| WebXDC | Realtime channels | localStorage | App-derived |
 | Mobile | Platform HTTP | Secure storage | Secure enclave |
-
-## Sync architecture
-
-The SDK defines generic transaction types (`TxData`, `TxInput`, `TxOutput`) that don't know where they came from. The caller converts their data source into these types, then feeds them to the sync engine:
-
-```
-Your data source ──→ Vec<TxData> ──→ sync::process_transactions()
-                                           │
-                                           ▼
-                                     SyncResult {
-                                       utxos, balance,
-                                       history, state
-                                     }
-```
-
-For incremental sync, persist the `SyncState` and pass it back next time — only new transactions need to be fetched.
 
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `secp256k1` | ECDSA signing + verification (audited, constant-time) |
-| `sha2` | SHA-256, SHA-512 (audited, hardware-accelerated) |
+| `sapling` (librustpivx) | Sapling cryptography, Groth16 proofs, ZIP32 |
+| `pivx_primitives` (librustpivx) | Transaction types, merkle tree I/O |
+| `secp256k1` | ECDSA signing + verification |
+| `sha2` | SHA-256, SHA-512 |
 | `ripemd` | RIPEMD-160 for Hash160 |
 | `hmac` | HMAC construction |
 | `serde` + `serde_json` | Serialization |
 | `zeroize` | Secure memory clearing |
-| `getrandom` | Cryptographic RNG (compiles to WASM via `crypto.getRandomValues()`) |
-
-**Zero platform dependencies.** Everything compiles to `wasm32-unknown-unknown`.
+| `getrandom` | Cryptographic RNG |
 
 ## Testing
 
 ```bash
-cargo test -p kerrigan-sdk          # 158 tests (144 unit + 14 E2E)
+cargo test -p kerrigan-sdk    # 276 tests (211 unit + 14 transparent E2E + 51 Sapling E2E)
 ```
-
-Includes BIP39 spec vectors, BIP32 spec vectors (verified against Python `bip32utils`), ECDSA signature verification, UTXO derivation simulations, and encryption roundtrips.
 
 ## License
 

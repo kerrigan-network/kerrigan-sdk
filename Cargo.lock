@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "kerrigan-bridge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "bitcoincore-zmq",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "kerrigan-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bellman",
  "getrandom 0.2.17",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "kerrigan-wallet-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "kerrigan-sdk",
