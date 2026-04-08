@@ -10,22 +10,23 @@
 /// Full tx:        type=0x03 | raw_serialized_tx
 /// Compact tx:     type=0x04 | num_spends(1) | num_outputs(1)  [default]
 ///                   per spend: nullifier(32)
-///                   per output: cmu(32) + epk(32) + enc_ciphertext(580) + out_ciphertext(80)
+///                   per output: cv(32) + cmu(32) + epk(32) + enc_ciphertext(580) + out_ciphertext(80)
 /// Compact+ tx:    type=0x05 | num_spends(1) | num_outputs(1)  [new wallet bootstrap]
 ///                   per spend: nullifier(32)
 ///                   per output: cmu(32) + epk(32) + enc_ciphertext(580)
 /// ```
 ///
-/// Both modes strip proofs, signatures, and unused fields — light wallets
-/// don't verify proofs (the blockchain already did). This cuts ~24-42% of
+/// Both modes strip proofs, signatures, and binding sig — light wallets
+/// don't verify proofs (the blockchain already did). This cuts ~20-32% of
 /// sync data before transport compression.
 ///
-/// Compact (default, 0x04) includes the 80-byte `out_ciphertext` per output,
-/// enabling sender-side note recovery via the outgoing viewing key. Safe for
-/// imports, resyncs, and multi-device wallets.
+/// Compact (default, 0x04) includes cv + out_ciphertext per output,
+/// enabling sender-side note recovery via the outgoing viewing key (cv is
+/// needed to derive the outgoing cipher key). Safe for imports, resyncs,
+/// and multi-device wallets.
 ///
-/// Compact+ (0x05) additionally strips `out_ciphertext` for rapid bootstrap
-/// of freshly created wallets that have no history to recover.
+/// Compact+ (0x05) additionally strips cv and out_ciphertext for rapid
+/// bootstrap of freshly created wallets that have no history to recover.
 use sapling::note_encryption::{PreparedIncomingViewingKey, SaplingDomain, Zip212Enforcement};
 use sapling::zip32::ExtendedFullViewingKey;
 use sapling::{Node, NullifierDerivingKey};
@@ -89,17 +90,20 @@ pub struct CompactTransaction {
     pub outputs: Vec<CompactSaplingOutput>,
 }
 
-/// A compact Sapling output — only the fields needed for decryption.
+/// A compact Sapling output — only the fields needed for decryption and sender recovery.
 #[derive(Debug, Clone)]
 pub struct CompactSaplingOutput {
+    /// Value commitment (32 bytes) — needed for OVK outgoing recovery.
+    pub cv: [u8; 32],
     /// Note commitment (32 bytes).
     pub cmu: [u8; 32],
     /// Ephemeral public key (32 bytes).
     pub epk: [u8; 32],
     /// Encrypted ciphertext (580 bytes).
     pub enc_ciphertext: [u8; ENC_CT_SIZE],
-    /// Outgoing ciphertext (80 bytes) — present in compact+ (0x05) packets.
+    /// Outgoing ciphertext (80 bytes) — present in compact (0x04) packets.
     /// Enables sender-side note recovery via the outgoing viewing key.
+    /// Requires cv to derive the outgoing cipher key.
     pub out_ciphertext: Option<[u8; OUT_CT_SIZE]>,
 }
 
@@ -208,7 +212,7 @@ pub fn parse_shield_stream(data: &[u8]) -> Result<Vec<RawShieldBlock>, ShieldSyn
 
 /// Parse compact transaction payload (0x04, default).
 ///
-/// Includes out_ciphertext for sender recovery.
+/// Includes cv + out_ciphertext for sender recovery.
 fn parse_compact_tx(data: &[u8]) -> Result<CompactTransaction, ShieldSyncError> {
     if data.len() < 2 {
         return Err(ShieldSyncError::Truncated("compact tx header".into()));
@@ -217,7 +221,7 @@ fn parse_compact_tx(data: &[u8]) -> Result<CompactTransaction, ShieldSyncError> 
     let num_spends = data[0] as usize;
     let num_outputs = data[1] as usize;
 
-    let expected = 2 + num_spends * 32 + num_outputs * (32 + 32 + ENC_CT_SIZE + OUT_CT_SIZE);
+    let expected = 2 + num_spends * 32 + num_outputs * (32 + 32 + 32 + ENC_CT_SIZE + OUT_CT_SIZE);
     if data.len() < expected {
         return Err(ShieldSyncError::Truncated(format!(
             "compact tx body: need {expected} bytes, have {}",
@@ -237,6 +241,10 @@ fn parse_compact_tx(data: &[u8]) -> Result<CompactTransaction, ShieldSyncError> 
 
     let mut outputs = Vec::with_capacity(num_outputs);
     for _ in 0..num_outputs {
+        let mut cv = [0u8; 32];
+        cv.copy_from_slice(&data[pos..pos + 32]);
+        pos += 32;
+
         let mut cmu = [0u8; 32];
         cmu.copy_from_slice(&data[pos..pos + 32]);
         pos += 32;
@@ -253,7 +261,7 @@ fn parse_compact_tx(data: &[u8]) -> Result<CompactTransaction, ShieldSyncError> 
         out_ct.copy_from_slice(&data[pos..pos + OUT_CT_SIZE]);
         pos += OUT_CT_SIZE;
 
-        outputs.push(CompactSaplingOutput { cmu, epk, enc_ciphertext, out_ciphertext: Some(out_ct) });
+        outputs.push(CompactSaplingOutput { cv, cmu, epk, enc_ciphertext, out_ciphertext: Some(out_ct) });
     }
 
     Ok(CompactTransaction { nullifiers, outputs })
@@ -302,7 +310,7 @@ fn parse_compact_plus_tx(data: &[u8]) -> Result<CompactTransaction, ShieldSyncEr
         enc_ciphertext.copy_from_slice(&data[pos..pos + ENC_CT_SIZE]);
         pos += ENC_CT_SIZE;
 
-        outputs.push(CompactSaplingOutput { cmu, epk, enc_ciphertext, out_ciphertext: None });
+        outputs.push(CompactSaplingOutput { cv: [0u8; 32], cmu, epk, enc_ciphertext, out_ciphertext: None });
     }
 
     Ok(CompactTransaction { nullifiers, outputs })
@@ -324,11 +332,11 @@ pub fn encode_block_marker(height: u32) -> Vec<u8> {
 
 /// Encode a compact transaction packet (0x04, default).
 ///
-/// Includes out_ciphertext for sender recovery.
+/// Includes cv + out_ciphertext for sender recovery.
 pub fn encode_compact_tx(tx: &CompactTransaction) -> Vec<u8> {
     let payload_len = 1 + 2
         + tx.nullifiers.len() * 32
-        + tx.outputs.len() * (32 + 32 + ENC_CT_SIZE + OUT_CT_SIZE);
+        + tx.outputs.len() * (32 + 32 + 32 + ENC_CT_SIZE + OUT_CT_SIZE);
 
     let mut payload = Vec::with_capacity(payload_len);
     payload.push(PACKET_TYPE_COMPACT_TX);
@@ -340,10 +348,10 @@ pub fn encode_compact_tx(tx: &CompactTransaction) -> Vec<u8> {
     }
 
     for out in &tx.outputs {
+        payload.extend_from_slice(&out.cv);
         payload.extend_from_slice(&out.cmu);
         payload.extend_from_slice(&out.epk);
         payload.extend_from_slice(&out.enc_ciphertext);
-        // Write out_ciphertext (zeros if not present)
         payload.extend_from_slice(
             out.out_ciphertext.as_ref().map_or(&[0u8; OUT_CT_SIZE][..], |ct| &ct[..])
         );
@@ -652,6 +660,7 @@ mod tests {
         let tx = CompactTransaction {
             nullifiers: vec![[42u8; 32]],
             outputs: vec![CompactSaplingOutput {
+                cv: [0u8; 32],
                 cmu: [1u8; 32],
                 epk: [2u8; 32],
                 enc_ciphertext: [3u8; ENC_CT_SIZE],
@@ -700,6 +709,7 @@ mod tests {
         let compact = CompactTransaction {
             nullifiers: vec![],
             outputs: vec![CompactSaplingOutput {
+                cv: [0u8; 32],
                 cmu: [5u8; 32],
                 epk: [6u8; 32],
                 enc_ciphertext: [7u8; ENC_CT_SIZE],
@@ -724,12 +734,14 @@ mod tests {
             nullifiers: vec![[10u8; 32], [20u8; 32]],
             outputs: vec![
                 CompactSaplingOutput {
+                    cv: [0u8; 32],
                     cmu: [30u8; 32],
                     epk: [40u8; 32],
                     enc_ciphertext: [50u8; ENC_CT_SIZE],
                     out_ciphertext: Some([55u8; OUT_CT_SIZE]),
                 },
                 CompactSaplingOutput {
+                    cv: [0u8; 32],
                     cmu: [60u8; 32],
                     epk: [70u8; 32],
                     enc_ciphertext: [80u8; ENC_CT_SIZE],
@@ -840,6 +852,7 @@ mod tests {
         let tx = CompactTransaction {
             nullifiers: vec![[11u8; 32]],
             outputs: vec![CompactSaplingOutput {
+                cv: [0u8; 32],
                 cmu: [22u8; 32],
                 epk: [33u8; 32],
                 enc_ciphertext: [44u8; ENC_CT_SIZE],
@@ -876,6 +889,7 @@ mod tests {
         let compact = CompactTransaction {
             nullifiers: vec![],
             outputs: vec![CompactSaplingOutput {
+                cv: [0u8; 32],
                 cmu: [1u8; 32],
                 epk: [2u8; 32],
                 enc_ciphertext: [3u8; ENC_CT_SIZE],
@@ -886,6 +900,7 @@ mod tests {
         let compact_plus = CompactTransaction {
             nullifiers: vec![[9u8; 32]],
             outputs: vec![CompactSaplingOutput {
+                cv: [0u8; 32],
                 cmu: [4u8; 32],
                 epk: [5u8; 32],
                 enc_ciphertext: [6u8; ENC_CT_SIZE],
@@ -922,12 +937,14 @@ mod tests {
             nullifiers: vec![[10u8; 32], [20u8; 32]],
             outputs: vec![
                 CompactSaplingOutput {
+                    cv: [0u8; 32],
                     cmu: [30u8; 32],
                     epk: [40u8; 32],
                     enc_ciphertext: [50u8; ENC_CT_SIZE],
                     out_ciphertext: Some([60u8; OUT_CT_SIZE]),
                 },
                 CompactSaplingOutput {
+                    cv: [0u8; 32],
                     cmu: [70u8; 32],
                     epk: [80u8; 32],
                     enc_ciphertext: [90u8; ENC_CT_SIZE],

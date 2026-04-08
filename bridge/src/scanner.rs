@@ -245,8 +245,11 @@ fn parse_sapling_payload(data: &[u8]) -> Result<Option<CompactTransaction>, Stri
     for _ in 0..num_outputs {
         if pos + 948 > data.len() { return Err("truncated output".into()); }
         // cv(32) + cmu(32) + epk(32) + enc(580) + out(80) + proof(192)
+        let mut cv = [0u8; 32];
+        cv.copy_from_slice(&data[pos..pos + 32]); // cv at offset 0
+
         let mut cmu = [0u8; 32];
-        cmu.copy_from_slice(&data[pos + 32..pos + 64]); // cmu at offset 32 (after cv)
+        cmu.copy_from_slice(&data[pos + 32..pos + 64]); // cmu at offset 32
 
         let mut epk = [0u8; 32];
         epk.copy_from_slice(&data[pos + 64..pos + 96]); // epk at offset 64
@@ -257,7 +260,7 @@ fn parse_sapling_payload(data: &[u8]) -> Result<Option<CompactTransaction>, Stri
         let mut out_ciphertext = [0u8; 80];
         out_ciphertext.copy_from_slice(&data[pos + 96 + ENC_CIPHERTEXT_SIZE..pos + 96 + ENC_CIPHERTEXT_SIZE + 80]);
 
-        outputs.push(CompactSaplingOutput { cmu, epk, enc_ciphertext, out_ciphertext: Some(out_ciphertext) });
+        outputs.push(CompactSaplingOutput { cv, cmu, epk, enc_ciphertext, out_ciphertext: Some(out_ciphertext) });
         pos += 948;
     }
 

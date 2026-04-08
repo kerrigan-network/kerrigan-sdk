@@ -255,6 +255,7 @@ fn compact_protocol_compact_tx_roundtrip() {
     let tx = CompactTransaction {
         nullifiers: vec![[0xAA; 32], [0xBB; 32]],
         outputs: vec![CompactSaplingOutput {
+            cv: [0u8; 32],
             cmu: [0x11; 32],
             epk: [0x22; 32],
             enc_ciphertext: [0x33; ENC_CIPHERTEXT_SIZE],
@@ -318,6 +319,7 @@ fn compact_protocol_unknown_type_fails() {
 fn compact_output_implements_shielded_output() {
     // CompactSaplingOutput implements ShieldedOutput<SaplingDomain> for try_note_decryption
     let output = CompactSaplingOutput {
+        cv: [0u8; 32],
         cmu: [0x11; 32],
         epk: [0x22; 32],
         enc_ciphertext: [0x33; ENC_CIPHERTEXT_SIZE],
