@@ -24,6 +24,53 @@ use config::Config;
 use index::ShieldIndex;
 use rpc::RpcClient;
 
+/// Scan for new blocks and index them. Shared by ZMQ and polling.
+fn index_new_blocks(
+    rpc_url: &str,
+    rpc_user: &str,
+    rpc_pass: &str,
+    state: &Arc<AppState>,
+    index_path: &str,
+    source: &str,
+) {
+    let rpc = RpcClient::new(rpc_url, rpc_user, rpc_pass);
+    let chain_height = match rpc.get_block_count() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("  [{source}] RPC error: {e}");
+            return;
+        }
+    };
+
+    let rt = tokio::runtime::Handle::current();
+    let last_scanned = rt.block_on(async { state.index.read().await.last_scanned });
+
+    let scan_from = last_scanned + 1;
+    if scan_from > chain_height {
+        return;
+    }
+
+    match scanner::scan_range(&rpc, scan_from, chain_height, |_, _| {}) {
+        Ok(blocks) => {
+            let count = blocks.len();
+            rt.block_on(async {
+                let mut index = state.index.write().await;
+                for block in &blocks {
+                    index.add_shield_block(block.height);
+                }
+                index.last_scanned = chain_height;
+                let _ = index.save(index_path);
+            });
+            if count > 0 {
+                eprintln!("  [{source}] Indexed {count} new shield block(s) (chain: {chain_height})");
+            }
+        }
+        Err(e) => {
+            eprintln!("  [{source}] Scan error: {e}");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::parse();
@@ -90,11 +137,8 @@ async fn main() {
         rpc,
         index: RwLock::new(index),
         index_path: config.index_path.clone(),
+        hash_cache: RwLock::new(api::HashCache::new(1000)),
     });
-
-    // Clone for background task before router takes ownership
-    let bg_state = state.clone();
-    let bg_config = config.clone();
 
     // Routes
     let app = Router::new()
@@ -102,81 +146,101 @@ async fn main() {
         .route("/getblockcount", get(api::get_block_count))
         .route("/getshieldblocks", get(api::get_shield_blocks))
         .route("/sendrawtransaction", post(api::send_raw_transaction))
-        .with_state(state);
+        .with_state(state.clone());
 
-    // Background block scanner — subscribes to ZMQ hashblock notifications
-    tokio::spawn(async move {
-        eprintln!("  [zmq] Subscribing to {}", bg_config.zmq_url);
+    // ZMQ listener — instant block notifications when it works
+    {
+        let s = state.clone();
+        let zmq_url = config.zmq_url.clone();
+        let rpc_url = config.rpc_url.clone();
+        let rpc_user = config.rpc_user.clone();
+        let rpc_pass = config.rpc_pass.clone();
+        let index_path = config.index_path.clone();
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            loop {
+                eprintln!("  [zmq] Subscribing to {zmq_url}...");
+                let mut subscriber = match bitcoincore_zmq::subscribe_async(&[&zmq_url]) {
+                    Ok(sub) => {
+                        eprintln!("  [zmq] Connected");
+                        sub
+                    }
+                    Err(e) => {
+                        eprintln!("  [zmq] Failed: {e} — retrying in 30s");
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        continue;
+                    }
+                };
 
-        let mut subscriber = match bitcoincore_zmq::subscribe_async(&[&bg_config.zmq_url]) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("  [zmq] Failed to subscribe: {e} — falling back to no live updates");
-                return;
+                while let Some(msg) = subscriber.next().await {
+                    let msg = match msg {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("  [zmq] Error: {e} — reconnecting");
+                            break;
+                        }
+                    };
+                    if !matches!(msg, bitcoincore_zmq::Message::HashBlock(_, _)) {
+                        continue;
+                    }
+
+                    let s2 = s.clone();
+                    let r = rpc_url.clone();
+                    let u = rpc_user.clone();
+                    let p = rpc_pass.clone();
+                    let i = index_path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        index_new_blocks(&r, &u, &p, &s2, &i, "ZMQ");
+                    }).await.ok();
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
-        };
+        });
+    }
 
-        use futures::StreamExt;
-        while let Some(msg) = subscriber.next().await {
-            let msg = match msg {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("  [zmq] Error: {e}");
+    // Polling loop — always runs, catches anything ZMQ misses
+    {
+        let s = state.clone();
+        let rpc_url = config.rpc_url.clone();
+        let rpc_user = config.rpc_user.clone();
+        let rpc_pass = config.rpc_pass.clone();
+        let index_path = config.index_path.clone();
+        tokio::spawn(async move {
+            eprintln!("  [poll] Active (10s interval)");
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+                // Quick check: does last scanned block have a nextblockhash?
+                let last_scanned = s.index.read().await.last_scanned;
+                let rpc = RpcClient::new(&rpc_url, &rpc_user, &rpc_pass);
+                let has_next = match rpc.get_block_hash(last_scanned) {
+                    Ok(hash) => match rpc.get_block(&hash, 1) {
+                        Ok(json) => json.get("nextblockhash").is_some(),
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                };
+                if !has_next {
                     continue;
                 }
-            };
 
-            // We only care about hashblock notifications
-            if !matches!(msg, bitcoincore_zmq::Message::HashBlock(_, _)) {
-                continue;
+                let s2 = s.clone();
+                let r = rpc_url.clone();
+                let u = rpc_user.clone();
+                let p = rpc_pass.clone();
+                let i = index_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    index_new_blocks(&r, &u, &p, &s2, &i, "Poll");
+                }).await.ok();
             }
-
-            eprintln!("  [zmq] New block notification");
-
-            // Scan new blocks since our last indexed height
-            let last_scanned = bg_state.index.read().await.last_scanned;
-
-            let rpc_url = bg_state.rpc.url().to_string();
-            let rpc_user = bg_state.rpc.user().to_string();
-            let rpc_pass = bg_state.rpc.pass().to_string();
-
-            let scan_from = last_scanned + 1;
-            let scan_result = tokio::task::spawn_blocking(move || {
-                let rpc = RpcClient::new(&rpc_url, &rpc_user, &rpc_pass);
-                let chain_height = rpc.get_block_count()
-                    .map_err(|e| scanner::ScanError::Rpc(format!("{e}")))?;
-                let blocks = scanner::scan_range(&rpc, scan_from, chain_height, |_, _| {})?;
-                Ok::<(Vec<_>, u32), scanner::ScanError>((blocks, chain_height))
-            }).await;
-
-            if let Ok(Ok((blocks, chain_height))) = scan_result {
-                let mut index = bg_state.index.write().await;
-                let new_count = blocks.len();
-                for block in &blocks {
-                    index.add_shield_block(block.height);
-                }
-                index.last_scanned = chain_height;
-                let _ = index.save(&bg_config.index_path);
-
-                if new_count > 0 {
-                    eprintln!("  [zmq] Indexed {new_count} new shield block(s) at height {chain_height}");
-                }
-            }
-        }
-
-        eprintln!("  [zmq] Subscriber ended");
-    });
+        });
+    }
 
     // Serve
     let addr = format!("0.0.0.0:{}", config.port);
     println!();
-    println!("  Bridge listening on http://{addr}");
-    println!("  Scanning for new blocks every 30s");
-    println!("  Endpoints:");
-    println!("    GET  /getshielddata?startBlock=N");
-    println!("    GET  /getblockcount");
-    println!("    GET  /getshieldblocks");
-    println!("    POST /sendrawtransaction");
+    println!("  Listening on http://{addr}");
     println!();
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {

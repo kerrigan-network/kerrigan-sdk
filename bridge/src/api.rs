@@ -1,4 +1,5 @@
 /// HTTP API — axum endpoints for the bridge.
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -13,12 +14,66 @@ use crate::rpc::RpcClient;
 use crate::scanner;
 use crate::stream;
 
+/// Write elapsed time directly to stderr — zero allocation.
+pub fn log_timing(start: std::time::Instant, label: &str) {
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    let stderr = std::io::stderr();
+    let mut w = stderr.lock();
+    if ms >= 1000.0 {
+        let _ = writeln!(w, "  [proxy {:.1}s] {label}", ms / 1000.0);
+    } else if ms >= 1.0 {
+        let _ = writeln!(w, "  [proxy {:.0}ms] {label}", ms);
+    } else {
+        let _ = writeln!(w, "  [proxy {:.2}ms] {label}", ms);
+    }
+}
+
 /// Shared application state.
 pub struct AppState {
     pub rpc: RpcClient,
     pub index: RwLock<ShieldIndex>,
     #[allow(dead_code)]
     pub index_path: String,
+    /// LRU cache: height → block hash. Eliminates redundant getblockhash RPCs.
+    #[allow(dead_code)]
+    pub hash_cache: RwLock<HashCache>,
+}
+
+/// Fixed-size LRU cache for block height → hash mappings.
+#[allow(dead_code)]
+pub struct HashCache {
+    entries: std::collections::HashMap<u32, String>,
+    order: std::collections::VecDeque<u32>,
+    capacity: usize,
+}
+
+impl HashCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: std::collections::HashMap::with_capacity(capacity),
+            order: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn get(&self, height: u32) -> Option<&str> {
+        self.entries.get(&height).map(|s| s.as_str())
+    }
+
+    #[allow(dead_code)]
+    pub fn insert(&mut self, height: u32, hash: String) {
+        if self.entries.contains_key(&height) {
+            return;
+        }
+        if self.entries.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(height, hash);
+        self.order.push_back(height);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +113,7 @@ pub async fn get_shield_data(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let start = query.start_block.unwrap_or(500);
     let format = query.format;
-    eprintln!("  [shielddata] Request startBlock={start} format={format:?}");
+    let timer = std::time::Instant::now();
 
     // Get shield block heights from the index
     let heights = {
@@ -99,6 +154,7 @@ pub async fn get_shield_data(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task error: {e}")))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    log_timing(timer, "getshielddata");
     Ok((
         StatusCode::OK,
         [("Content-Type", "application/octet-stream")],
@@ -114,10 +170,12 @@ pub async fn get_shield_data(
 pub async fn get_block_count(
     State(state): State<Arc<AppState>>,
 ) -> Result<String, (StatusCode, String)> {
+    let timer = std::time::Instant::now();
     let count = state
         .rpc
         .get_block_count()
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("node error: {e}")))?;
+    log_timing(timer, "getblockcount");
     Ok(count.to_string())
 }
 
@@ -129,8 +187,11 @@ pub async fn get_block_count(
 pub async fn get_shield_blocks(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<u32>> {
+    let timer = std::time::Instant::now();
     let index = state.index.read().await;
-    Json(index.shield_heights.clone())
+    let result = Json(index.shield_heights.clone());
+    log_timing(timer, "getshieldblocks");
+    result
 }
 
 // ---------------------------------------------------------------------------
