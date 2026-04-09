@@ -15,8 +15,8 @@ use crate::api::StreamFormat;
 /// `parse_shield_stream()` can decode directly.
 ///
 /// The `format` parameter controls which packet type is used for compact data:
-/// - `Compact` (default): 0x05 packets with out_ciphertext (724 bytes/output)
-/// - `CompactPlus`: 0x04 packets without out_ciphertext (644 bytes/output)
+/// - `Compact` (default): 0x04 packets with out_ciphertext (724 bytes/output)
+/// - `CompactPlus`: 0x05 packets without out_ciphertext (644 bytes/output)
 pub fn encode_shield_stream(blocks: &[RawShieldBlock], format: StreamFormat) -> Vec<u8> {
     let mut stream = Vec::new();
 

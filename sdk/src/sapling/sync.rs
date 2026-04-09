@@ -400,6 +400,146 @@ pub fn encode_full_tx(raw_tx: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Kerrigan raw transaction parser (type 10, version 3)
+// ---------------------------------------------------------------------------
+
+/// Kerrigan Sapling tx header: nVersion=3 (LE u16) + nType=10 (LE u16).
+const KERRIGAN_SAPLING_HEADER: [u8; 4] = [0x03, 0x00, 0x0a, 0x00];
+
+/// Size of each Sapling spend description (bytes).
+const SPEND_DESC_SIZE: usize = 384; // cv(32)+anchor(32)+nullifier(32)+rk(32)+proof(192)+sig(64)
+
+/// Size of each Sapling output description (bytes).
+const OUTPUT_DESC_SIZE: usize = 948; // cv(32)+cmu(32)+epk(32)+enc(580)+out(80)+proof(192)
+
+/// Parse a raw Kerrigan type 10 transaction and extract compact Sapling data.
+///
+/// Format: header(4) + vin + vout + locktime(4) + extraPayload
+/// Payload: nVersion(2) + spends + outputs + valueBalance(8) + bindingSig(64)
+pub fn parse_kerrigan_full_tx(data: &[u8]) -> Result<Option<CompactTransaction>, ShieldSyncError> {
+    if data.len() < 4 || data[..4] != KERRIGAN_SAPLING_HEADER {
+        return Err(ShieldSyncError::Truncated("not a Kerrigan Sapling tx".into()));
+    }
+
+    let mut pos = 4; // skip header
+
+    // Skip vin
+    let (vin_count, br) = read_compact_size(data, pos)?;
+    pos += br;
+    for _ in 0..vin_count {
+        pos += 32 + 4; // prevout: txid + vout
+        let (script_len, br) = read_compact_size(data, pos)?;
+        pos += br + script_len; // scriptSig
+        pos += 4; // sequence
+        if pos > data.len() { return Err(ShieldSyncError::Truncated("vin".into())); }
+    }
+
+    // Skip vout
+    let (vout_count, br) = read_compact_size(data, pos)?;
+    pos += br;
+    for _ in 0..vout_count {
+        pos += 8; // value
+        let (script_len, br) = read_compact_size(data, pos)?;
+        pos += br + script_len; // scriptPubKey
+        if pos > data.len() { return Err(ShieldSyncError::Truncated("vout".into())); }
+    }
+
+    // Skip nLockTime
+    pos += 4;
+
+    // Read extra payload
+    let (payload_len, br) = read_compact_size(data, pos)?;
+    pos += br;
+    if pos + payload_len > data.len() {
+        return Err(ShieldSyncError::Truncated("payload".into()));
+    }
+
+    let payload = &data[pos..pos + payload_len];
+    parse_sapling_payload(payload)
+}
+
+/// Parse the Sapling extra payload to extract compact data.
+fn parse_sapling_payload(data: &[u8]) -> Result<Option<CompactTransaction>, ShieldSyncError> {
+    let mut pos = 2; // skip payload nVersion (u16)
+
+    // Spend descriptions
+    let (num_spends, br) = read_compact_size(data, pos)?;
+    pos += br;
+
+    let mut nullifiers = Vec::new();
+    for _ in 0..num_spends {
+        if pos + SPEND_DESC_SIZE > data.len() {
+            return Err(ShieldSyncError::Truncated("spend".into()));
+        }
+        let mut nf = [0u8; 32];
+        nf.copy_from_slice(&data[pos + 64..pos + 96]); // nullifier at offset 64
+        nullifiers.push(nf);
+        pos += SPEND_DESC_SIZE;
+    }
+
+    // Output descriptions
+    let (num_outputs, br) = read_compact_size(data, pos)?;
+    pos += br;
+
+    let mut outputs = Vec::new();
+    for _ in 0..num_outputs {
+        if pos + OUTPUT_DESC_SIZE > data.len() {
+            return Err(ShieldSyncError::Truncated("output".into()));
+        }
+        // cv(32) + cmu(32) + epk(32) + enc(580) + out(80) + proof(192)
+        let mut cv = [0u8; 32];
+        cv.copy_from_slice(&data[pos..pos + 32]);
+
+        let mut cmu = [0u8; 32];
+        cmu.copy_from_slice(&data[pos + 32..pos + 64]);
+
+        let mut epk = [0u8; 32];
+        epk.copy_from_slice(&data[pos + 64..pos + 96]);
+
+        let mut enc_ciphertext = [0u8; ENC_CT_SIZE];
+        enc_ciphertext.copy_from_slice(&data[pos + 96..pos + 96 + ENC_CT_SIZE]);
+
+        let mut out_ciphertext = [0u8; OUT_CT_SIZE];
+        out_ciphertext.copy_from_slice(&data[pos + 96 + ENC_CT_SIZE..pos + 96 + ENC_CT_SIZE + OUT_CT_SIZE]);
+
+        outputs.push(CompactSaplingOutput {
+            cv, cmu, epk, enc_ciphertext,
+            out_ciphertext: Some(out_ciphertext),
+        });
+        pos += OUTPUT_DESC_SIZE;
+    }
+
+    if nullifiers.is_empty() && outputs.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(CompactTransaction { nullifiers, outputs }))
+}
+
+/// Read a Bitcoin compact size (varint) from data at offset.
+fn read_compact_size(data: &[u8], pos: usize) -> Result<(usize, usize), ShieldSyncError> {
+    if pos >= data.len() { return Err(ShieldSyncError::Truncated("varint".into())); }
+    match data[pos] {
+        n if n < 253 => Ok((n as usize, 1)),
+        253 => {
+            if pos + 3 > data.len() { return Err(ShieldSyncError::Truncated("varint16".into())); }
+            Ok((u16::from_le_bytes([data[pos+1], data[pos+2]]) as usize, 3))
+        }
+        254 => {
+            if pos + 5 > data.len() { return Err(ShieldSyncError::Truncated("varint32".into())); }
+            Ok((u32::from_le_bytes([data[pos+1], data[pos+2], data[pos+3], data[pos+4]]) as usize, 5))
+        }
+        _ => {
+            if pos + 9 > data.len() { return Err(ShieldSyncError::Truncated("varint64".into())); }
+            Ok((u64::from_le_bytes([
+                data[pos+1], data[pos+2], data[pos+3], data[pos+4],
+                data[pos+5], data[pos+6], data[pos+7], data[pos+8],
+            ]) as usize, 9))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Compact block processing (direct decryption, no Transaction::read)
 // ---------------------------------------------------------------------------
 
@@ -525,24 +665,19 @@ pub fn process_shield_blocks(
                     )?;
                 }
                 BlockEntry::FullTx(tx_bytes) => {
-                    // Try the Zcash parser. Kerrigan uses PIVX tx format
-                    // (version 3, type 10) which the Zcash parser can't handle.
-                    // Skip unparseable txs — compact format is the preferred path.
-                    match notes::process_sapling_transaction(
-                        &mut tree,
-                        tx_bytes,
-                        extfvk,
-                        &nk,
-                        &mut existing,
-                        block.height,
-                    ) {
-                        Ok(result) => {
-                            all_nullifiers.extend(result.spent_nullifiers);
-                            all_new.extend(result.new_notes);
+                    // Parse the Kerrigan type 10 raw tx into compact data,
+                    // then process via the same path as compact txs.
+                    match parse_kerrigan_full_tx(tx_bytes) {
+                        Ok(Some(compact)) => {
+                            process_compact_transaction(
+                                &mut tree, &compact, extfvk, &nk,
+                                &mut existing, &mut all_new,
+                                block.height, &mut all_nullifiers,
+                            )?;
                         }
-                        Err(_) => {
-                            // Can't parse this tx format — skip it.
-                            // TODO: implement PIVX/Kerrigan Sapling tx parser
+                        Ok(None) => {} // No shielded data in this tx
+                        Err(e) => {
+                            eprintln!("  Warning: full tx parse failed: {e}");
                         }
                     }
                 }
