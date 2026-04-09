@@ -69,6 +69,7 @@ impl ShieldIndex {
     }
 
     /// Get shield block heights >= start_block.
+    #[allow(dead_code)]
     pub fn heights_from(&self, start_block: u32) -> Vec<u32> {
         let idx = self.shield_heights.partition_point(|&h| h < start_block);
         self.shield_heights[idx..].to_vec()

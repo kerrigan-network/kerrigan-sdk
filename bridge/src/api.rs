@@ -1,6 +1,6 @@
 /// HTTP API — axum endpoints for the bridge.
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -13,8 +13,6 @@ use tokio::sync::RwLock;
 use crate::cache::BlockCache;
 use crate::index::ShieldIndex;
 use crate::rpc::RpcClient;
-use crate::scanner;
-use crate::stream;
 
 /// Write elapsed time directly to stderr — zero allocation.
 pub fn log_timing(start: std::time::Instant, label: &str) {
@@ -165,13 +163,25 @@ pub async fn get_shield_data(
         ));
     }
 
-    // Slow path: CompactPlus — fetch from node and encode on-the-fly
-    let heights = {
+    // CompactPlus: derive from the Compact buffer by stripping cv + out_ciphertext
+    let offset = {
         let index = state.index.read().await;
-        index.heights_from(start)
+        match index.offset_for_height(start) {
+            Some(o) => o as usize,
+            None => {
+                log_timing(timer, "getshielddata (empty)");
+                return Ok((
+                    StatusCode::OK,
+                    [("Content-Type", "application/octet-stream")],
+                    Vec::new(),
+                ));
+            }
+        }
     };
 
-    if heights.is_empty() {
+    let buffer = state.shield_buffer.read().await;
+    if offset >= buffer.len() {
+        log_timing(timer, "getshielddata (empty)");
         return Ok((
             StatusCode::OK,
             [("Content-Type", "application/octet-stream")],
@@ -179,36 +189,72 @@ pub async fn get_shield_data(
         ));
     }
 
-    let rpc_url = state.rpc.url().to_string();
-    let rpc_user = state.rpc.user().to_string();
-    let rpc_pass = state.rpc.pass().to_string();
-    let state_ref = state.clone();
-
-    let stream = tokio::task::spawn_blocking(move || {
-        let rpc = RpcClient::new(&rpc_url, &rpc_user, &rpc_pass);
-        let chain_h = state_ref.chain_height.load(Ordering::Relaxed);
-        let mut blocks = Vec::new();
-
-        for height in heights {
-            match scanner::scan_block(&rpc, height, &state_ref.block_cache, chain_h) {
-                Ok(Some(block)) => blocks.push(block),
-                Ok(None) => {}
-                Err(e) => return Err(format!("scan error at height {height}: {e}")),
-            }
-        }
-
-        Ok(stream::encode_shield_stream(&blocks, format))
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task error: {e}")))?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    log_timing(timer, "getshielddata (rpc)");
+    let data = compact_to_compact_plus(&buffer[offset..]);
+    drop(buffer);
+    log_timing(timer, "getshielddata (buffer→compact+)");
     Ok((
         StatusCode::OK,
         [("Content-Type", "application/octet-stream")],
-        stream,
+        data,
     ))
+}
+
+/// Transform a Compact (0x04) stream into CompactPlus (0x05) by stripping
+/// cv (32 bytes) and out_ciphertext (80 bytes) from each output.
+///
+/// Walks the length-prefixed packets in the buffer, copies block markers
+/// as-is, and rewrites compact tx packets with the fields removed.
+fn compact_to_compact_plus(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len()); // will be smaller
+    let mut pos = 0;
+
+    while pos + 4 <= data.len() {
+        let pkt_len = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
+        let pkt_end = pos + 4 + pkt_len;
+        if pkt_end > data.len() { break; }
+
+        let pkt_type = data[pos + 4];
+
+        if pkt_type == 0x5d {
+            // Block marker — copy as-is
+            out.extend_from_slice(&data[pos..pkt_end]);
+        } else if pkt_type == 0x04 && pkt_len >= 3 {
+            // Compact tx → CompactPlus: strip cv(32) + out_ct(80) per output
+            let num_spends = data[pos + 5] as usize;
+            let num_outputs = data[pos + 6] as usize;
+
+            // Calculate new packet size: type(1) + nSpends(1) + nOutputs(1)
+            //   + spends(num_spends * 32) + outputs(num_outputs * 644)
+            let new_pkt_len = 3 + num_spends * 32 + num_outputs * 644;
+            out.extend_from_slice(&(new_pkt_len as u32).to_le_bytes());
+            out.push(0x05); // CompactPlus type
+            out.push(num_spends as u8);
+            out.push(num_outputs as u8);
+
+            // Copy nullifiers (32 bytes each)
+            let mut src = pos + 7; // after type + nSpends + nOutputs
+            for _ in 0..num_spends {
+                out.extend_from_slice(&data[src..src + 32]);
+                src += 32;
+            }
+
+            // Copy outputs, skipping cv (first 32) and out_ct (last 80)
+            for _ in 0..num_outputs {
+                // src layout: cv(32) + cmu(32) + epk(32) + enc(580) + out_ct(80) = 756
+                let cmu_start = src + 32; // skip cv
+                let enc_end = cmu_start + 32 + 32 + 580; // cmu + epk + enc
+                out.extend_from_slice(&data[cmu_start..enc_end]); // 644 bytes
+                src += 756;
+            }
+        } else {
+            // Unknown packet — copy as-is
+            out.extend_from_slice(&data[pos..pkt_end]);
+        }
+
+        pos = pkt_end;
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------------------
