@@ -1,0 +1,279 @@
+/// Block cache — caches `getblock` JSON responses with reorg detection.
+///
+/// Strips mutable fields (`confirmations`, `nextblockhash`) on insert and
+/// rehydrates them on read using the current chain height and height-to-hash
+/// index. Evicts the lowest-height entry when full, keeping tip blocks hot.
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use serde_json::Value;
+
+/// Cached `getblock` response with mutable fields stripped.
+struct CachedBlock {
+    height: u32,
+    /// JSON response with `confirmations` and `nextblockhash` removed.
+    json: Value,
+}
+
+/// Thread-safe block cache with reorg-aware invalidation.
+///
+/// Read path (`get`) is lock-free on the stats (atomics) and only needs a
+/// shared `&self` — callers hold a `RwLock` read guard. Write path (`insert`,
+/// `invalidate_from`) takes an exclusive `&mut self`.
+pub struct BlockCache {
+    /// `(block_hash, verbosity)` -> stripped response.
+    entries: HashMap<(String, u8), CachedBlock>,
+    /// `height` -> `block_hash` for reverse lookups and reorg invalidation.
+    height_to_hash: HashMap<u32, String>,
+    capacity: usize,
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
+}
+
+impl BlockCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::with_capacity(capacity),
+            height_to_hash: HashMap::with_capacity(capacity),
+            capacity,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+        }
+    }
+
+    /// Look up a cached block, rehydrating `confirmations` and `nextblockhash`.
+    ///
+    /// Read-only on the map — only atomics are mutated (hit/miss counters).
+    pub fn get(&self, hash: &str, verbosity: u8, chain_height: u32) -> Option<Value> {
+        let key = (hash.to_string(), verbosity);
+        let entry = match self.entries.get(&key) {
+            Some(e) => e,
+            None => {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
+
+        self.hits.fetch_add(1, Ordering::Relaxed);
+
+        let mut json = entry.json.clone();
+        if let Some(obj) = json.as_object_mut() {
+            // confirmations = chain_height - block_height + 1
+            let confs = chain_height.saturating_sub(entry.height) + 1;
+            obj.insert("confirmations".into(), Value::from(confs));
+
+            // nextblockhash — present only if we know the successor
+            if let Some(next_hash) = self.height_to_hash.get(&(entry.height + 1)) {
+                obj.insert("nextblockhash".into(), Value::from(next_hash.as_str()));
+            }
+        }
+
+        Some(json)
+    }
+
+    /// Cache a `getblock` response, stripping mutable fields.
+    ///
+    /// Duplicate inserts (same hash + verbosity) are no-ops.
+    /// When at capacity, the lowest-height entry is evicted — this naturally
+    /// keeps the tip blocks (hottest for light-wallet traffic) in the cache.
+    pub fn insert(&mut self, hash: &str, verbosity: u8, json: &Value) {
+        let key = (hash.to_string(), verbosity);
+        if self.entries.contains_key(&key) {
+            return;
+        }
+
+        let height = json
+            .get("height")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        // Evict lowest-height entry if at capacity
+        while self.entries.len() >= self.capacity {
+            self.evict_lowest();
+        }
+
+        // Strip dynamic fields
+        let mut stripped = json.clone();
+        if let Some(obj) = stripped.as_object_mut() {
+            obj.remove("confirmations");
+            obj.remove("nextblockhash");
+        }
+
+        self.height_to_hash.insert(height, hash.to_string());
+        self.entries.insert(key, CachedBlock { height, json: stripped });
+    }
+
+    /// Get the block hash for a given height (if cached).
+    pub fn hash_for_height(&self, height: u32) -> Option<&str> {
+        self.height_to_hash.get(&height).map(|s| s.as_str())
+    }
+
+    /// Check if a new block's `previousblockhash` diverges from our cache.
+    ///
+    /// Returns `true` if the cached hash at `height - 1` doesn't match
+    /// `prev_hash`, indicating a chain reorganization.
+    pub fn detect_reorg(&self, height: u32, prev_hash: &str) -> bool {
+        if height == 0 {
+            return false;
+        }
+        match self.height_to_hash.get(&(height - 1)) {
+            Some(cached) => cached != prev_hash,
+            None => false, // No cache entry for parent — can't detect
+        }
+    }
+
+    /// Invalidate all cached blocks at or above `fork_height`.
+    ///
+    /// Called when a reorg is detected. Removes entries from both the block
+    /// cache and the height-to-hash index.
+    pub fn invalidate_from(&mut self, fork_height: u32) {
+        let to_remove: Vec<u32> = self
+            .height_to_hash
+            .keys()
+            .copied()
+            .filter(|&h| h >= fork_height)
+            .collect();
+
+        let count = to_remove.len();
+        for h in to_remove {
+            if let Some(hash) = self.height_to_hash.remove(&h) {
+                for v in 0..=2u8 {
+                    self.entries.remove(&(hash.clone(), v));
+                }
+            }
+        }
+
+        if count > 0 {
+            eprintln!("  [cache] Invalidated {count} block(s) from height {fork_height}");
+        }
+    }
+
+    /// Return `(hits, misses, cached_blocks)` for logging.
+    pub fn stats(&self) -> (u64, u64, usize) {
+        (
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+            self.height_to_hash.len(),
+        )
+    }
+
+    /// Evict the entry with the lowest block height.
+    fn evict_lowest(&mut self) {
+        let min_height = match self.height_to_hash.keys().min().copied() {
+            Some(h) => h,
+            None => return,
+        };
+        if let Some(hash) = self.height_to_hash.remove(&min_height) {
+            for v in 0..=2u8 {
+                self.entries.remove(&(hash.clone(), v));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_block(height: u32, hash: &str) -> Value {
+        json!({
+            "hash": hash,
+            "height": height,
+            "confirmations": 100,
+            "nextblockhash": "next_placeholder",
+            "tx": ["txid1", "txid2"],
+            "time": 1700000000u64 + height as u64,
+        })
+    }
+
+    #[test]
+    fn insert_and_get_rehydrates() {
+        let mut cache = BlockCache::new(10);
+        let block = make_block(500, "abc123");
+        cache.insert("abc123", 1, &block);
+
+        // Rehydrate at chain height 600
+        let got = cache.get("abc123", 1, 600).unwrap();
+        assert_eq!(got["confirmations"], 101); // 600 - 500 + 1
+        assert!(got.get("nextblockhash").is_none()); // no successor cached
+
+        // Add successor — nextblockhash appears
+        let block2 = make_block(501, "def456");
+        cache.insert("def456", 1, &block2);
+        let got = cache.get("abc123", 1, 600).unwrap();
+        assert_eq!(got["nextblockhash"], "def456");
+
+        // Original fields preserved
+        assert_eq!(got["tx"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn miss_returns_none() {
+        let cache = BlockCache::new(10);
+        assert!(cache.get("nonexistent", 1, 100).is_none());
+        assert_eq!(cache.misses.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn evicts_lowest_height() {
+        let mut cache = BlockCache::new(3);
+        cache.insert("a", 1, &make_block(100, "a"));
+        cache.insert("b", 1, &make_block(200, "b"));
+        cache.insert("c", 1, &make_block(300, "c"));
+        // Full — inserting evicts height 100
+        cache.insert("d", 1, &make_block(400, "d"));
+
+        assert!(cache.get("a", 1, 500).is_none()); // evicted
+        assert!(cache.get("b", 1, 500).is_some());
+        assert!(cache.get("d", 1, 500).is_some());
+    }
+
+    #[test]
+    fn reorg_detection_and_invalidation() {
+        let mut cache = BlockCache::new(10);
+        cache.insert("aaa", 1, &make_block(98, "aaa"));
+        cache.insert("bbb", 1, &make_block(99, "bbb"));
+        cache.insert("ccc", 1, &make_block(100, "ccc"));
+
+        // New block 100 with different parent — reorg!
+        assert!(cache.detect_reorg(100, "different_parent"));
+
+        // Normal case — no reorg
+        assert!(!cache.detect_reorg(100, "bbb"));
+
+        // Invalidate from fork point
+        cache.invalidate_from(99);
+        assert!(cache.get("aaa", 1, 200).is_some()); // below fork
+        assert!(cache.get("bbb", 1, 200).is_none()); // invalidated
+        assert!(cache.get("ccc", 1, 200).is_none()); // invalidated
+    }
+
+    #[test]
+    fn duplicate_insert_is_noop() {
+        let mut cache = BlockCache::new(10);
+        cache.insert("abc", 1, &make_block(100, "abc"));
+        cache.insert("abc", 1, &make_block(100, "abc")); // no-op
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn hash_for_height_lookup() {
+        let mut cache = BlockCache::new(10);
+        cache.insert("abc", 1, &make_block(500, "abc"));
+        assert_eq!(cache.hash_for_height(500), Some("abc"));
+        assert_eq!(cache.hash_for_height(501), None);
+    }
+
+    #[test]
+    fn different_verbosity_cached_separately() {
+        let mut cache = BlockCache::new(10);
+        let block = make_block(100, "abc");
+        cache.insert("abc", 1, &block);
+        cache.insert("abc", 2, &block);
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.get("abc", 1, 200).is_some());
+        assert!(cache.get("abc", 2, 200).is_some());
+        assert!(cache.get("abc", 0, 200).is_none());
+    }
+}

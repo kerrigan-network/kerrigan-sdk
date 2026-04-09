@@ -9,10 +9,47 @@ use kerrigan_sdk::sapling::sync::{
 };
 use zcash_note_encryption::ENC_CIPHERTEXT_SIZE;
 
+use crate::cache::BlockCache;
 use crate::rpc::RpcClient;
 
 /// Sapling transaction marker: version 3 (LE u16) + type 10 (LE u16).
 const SAPLING_TX_HEADER: [u8; 4] = [0x03, 0x00, 0x0a, 0x00];
+
+// ---------------------------------------------------------------------------
+// Block cache helpers
+// ---------------------------------------------------------------------------
+
+/// Fetch a `getblock` response, checking the cache first.
+///
+/// On cache miss, fetches from the node and populates the cache.
+fn fetch_block(
+    rpc: &RpcClient,
+    hash: &str,
+    verbosity: u32,
+    cache: &std::sync::RwLock<BlockCache>,
+    chain_height: u32,
+) -> Result<serde_json::Value, ScanError> {
+    // Read lock — concurrent readers allowed
+    {
+        let c = cache.read().unwrap();
+        if let Some(json) = c.get(hash, verbosity as u8, chain_height) {
+            return Ok(json);
+        }
+    }
+
+    // Cache miss — fetch from node
+    let json = rpc
+        .get_block(hash, verbosity)
+        .map_err(|e| ScanError::Rpc(format!("getblock({hash}): {e}")))?;
+
+    // Write lock — insert into cache
+    {
+        let mut c = cache.write().unwrap();
+        c.insert(hash, verbosity as u8, &json);
+    }
+
+    Ok(json)
+}
 
 // ---------------------------------------------------------------------------
 // Block scanning
@@ -77,16 +114,26 @@ fn scan_block_inner(
     }
 }
 
-/// Scan a single block by height (standalone).
-pub fn scan_block(rpc: &RpcClient, height: u32) -> Result<Option<RawShieldBlock>, ScanError> {
-    let hash = rpc
-        .get_block_hash(height)
-        .map_err(|e| ScanError::Rpc(format!("getblockhash({height}): {e}")))?;
+/// Scan a single block by height, using the block cache.
+pub fn scan_block(
+    rpc: &RpcClient,
+    height: u32,
+    block_cache: &std::sync::RwLock<BlockCache>,
+    chain_height: u32,
+) -> Result<Option<RawShieldBlock>, ScanError> {
+    // Try hash from cache first, then RPC
+    let hash = {
+        let c = block_cache.read().unwrap();
+        c.hash_for_height(height).map(String::from)
+    };
+    let hash = match hash {
+        Some(h) => h,
+        None => rpc
+            .get_block_hash(height)
+            .map_err(|e| ScanError::Rpc(format!("getblockhash({height}): {e}")))?,
+    };
 
-    // Verbosity 1 = block with txid list (no decoded txs, no crash)
-    let block_json = rpc
-        .get_block(&hash, 1)
-        .map_err(|e| ScanError::Rpc(format!("getblock({hash}): {e}")))?;
+    let block_json = fetch_block(rpc, &hash, 1, block_cache, chain_height)?;
 
     let h = block_json
         .get("height")
@@ -101,28 +148,38 @@ pub fn scan_block(rpc: &RpcClient, height: u32) -> Result<Option<RawShieldBlock>
 ///
 /// Only calls `getblockhash` once (for the first block), then follows the
 /// chain — one `getblock` call per block + one `getrawtransaction` per tx.
+/// All `getblock` results are cached for subsequent requests.
 ///
 /// Skips blocks that return RPC errors and continues scanning.
 pub fn scan_range(
     rpc: &RpcClient,
     start: u32,
     end: u32,
+    block_cache: &std::sync::RwLock<BlockCache>,
+    chain_height: u32,
     on_progress: impl Fn(u32, u32),
 ) -> Result<Vec<RawShieldBlock>, ScanError> {
     let mut shield_blocks = Vec::new();
     let total = end.saturating_sub(start) + 1;
     let mut errors = 0u32;
 
-    // Get the first block hash
-    let mut current_hash = rpc
-        .get_block_hash(start)
-        .map_err(|e| ScanError::Rpc(format!("getblockhash({start}): {e}")))?;
+    // Get the first block hash (check cache, then RPC)
+    let mut current_hash = {
+        let c = block_cache.read().unwrap();
+        c.hash_for_height(start).map(String::from)
+    };
+    let mut current_hash = match current_hash.take() {
+        Some(h) => h,
+        None => rpc
+            .get_block_hash(start)
+            .map_err(|e| ScanError::Rpc(format!("getblockhash({start}): {e}")))?,
+    };
 
     for height in start..=end {
         on_progress(height - start, total);
 
-        // Fetch block at verbosity 1 (txid list only)
-        let block_json = match rpc.get_block(&current_hash, 1) {
+        // Fetch block (cache-aware)
+        let block_json = match fetch_block(rpc, &current_hash, 1, block_cache, chain_height) {
             Ok(json) => json,
             Err(e) => {
                 eprintln!("\n  Warning: block {height} ({current_hash}): {e} — skipping");
@@ -156,10 +213,25 @@ pub fn scan_range(
             }
         }
 
-        // Chain to next block
-        match block_json.get("nextblockhash").and_then(|v| v.as_str()) {
-            Some(next) => current_hash = next.to_string(),
-            None => break,
+        // Chain to next block via nextblockhash (rehydrated) or hash lookup
+        if height < end {
+            current_hash = match block_json.get("nextblockhash").and_then(|v| v.as_str()) {
+                Some(next) => next.to_string(),
+                None => {
+                    // Cached block may lack nextblockhash — try height lookup, then RPC
+                    let c = block_cache.read().unwrap();
+                    match c.hash_for_height(height + 1) {
+                        Some(h) => h.to_string(),
+                        None => {
+                            drop(c);
+                            match rpc.get_block_hash(height + 1) {
+                                Ok(h) => h,
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                }
+            };
         }
     }
 

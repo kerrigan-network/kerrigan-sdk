@@ -1,5 +1,6 @@
 /// HTTP API — axum endpoints for the bridge.
 use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -9,6 +10,7 @@ use axum::Json;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use crate::cache::BlockCache;
 use crate::index::ShieldIndex;
 use crate::rpc::RpcClient;
 use crate::scanner;
@@ -37,6 +39,16 @@ pub struct AppState {
     /// LRU cache: height → block hash. Eliminates redundant getblockhash RPCs.
     #[allow(dead_code)]
     pub hash_cache: RwLock<HashCache>,
+    /// Block cache: `(hash, verbosity)` → stripped JSON. Eliminates repeated
+    /// `getblock` RPCs when multiple clients sync the same blocks.
+    pub block_cache: std::sync::RwLock<BlockCache>,
+    /// Current chain height — updated by ZMQ/polling, used for rehydration.
+    pub chain_height: AtomicU32,
+    /// Persistent shield.bin cache file handle.
+    pub cache_file: tokio::sync::Mutex<std::fs::File>,
+    /// In-memory shield buffer — the entire shield.bin held in RAM.
+    /// Requests serve slices directly from this buffer (zero disk I/O).
+    pub shield_buffer: RwLock<Vec<u8>>,
 }
 
 /// Fixed-size LRU cache for block height → hash mappings.
@@ -105,8 +117,9 @@ pub struct ShieldDataQuery {
 
 /// Serve compact shield data as a binary stream.
 ///
-/// For each shield block >= startBlock, fetches the block from the node,
-/// extracts compact Sapling data, and streams it in the binary wire format.
+/// For the default Compact format, serves directly from the in-memory
+/// shield buffer (zero RPC, zero disk I/O). For CompactPlus, re-fetches
+/// and encodes on-the-fly.
 pub async fn get_shield_data(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ShieldDataQuery>,
@@ -115,15 +128,50 @@ pub async fn get_shield_data(
     let format = query.format;
     let timer = std::time::Instant::now();
 
-    // Get shield block heights from the index
+    // Fast path: serve default Compact format from in-memory buffer
+    if format == StreamFormat::Compact {
+        let offset = {
+            let index = state.index.read().await;
+            match index.offset_for_height(start) {
+                Some(o) => o as usize,
+                None => {
+                    log_timing(timer, "getshielddata (empty)");
+                    return Ok((
+                        StatusCode::OK,
+                        [("Content-Type", "application/octet-stream")],
+                        Vec::new(),
+                    ));
+                }
+            }
+        };
+
+        let buffer = state.shield_buffer.read().await;
+        if offset >= buffer.len() {
+            log_timing(timer, "getshielddata (empty)");
+            return Ok((
+                StatusCode::OK,
+                [("Content-Type", "application/octet-stream")],
+                Vec::new(),
+            ));
+        }
+
+        let data = buffer[offset..].to_vec();
+        drop(buffer);
+        log_timing(timer, "getshielddata (buffer)");
+        return Ok((
+            StatusCode::OK,
+            [("Content-Type", "application/octet-stream")],
+            data,
+        ));
+    }
+
+    // Slow path: CompactPlus — fetch from node and encode on-the-fly
     let heights = {
         let index = state.index.read().await;
         index.heights_from(start)
     };
-    eprintln!("  [shielddata] {} shield blocks to serve", heights.len());
 
     if heights.is_empty() {
-        // Return empty binary response
         return Ok((
             StatusCode::OK,
             [("Content-Type", "application/octet-stream")],
@@ -131,19 +179,20 @@ pub async fn get_shield_data(
         ));
     }
 
-    // Fetch and encode blocks (blocking RPC calls in spawn_blocking)
     let rpc_url = state.rpc.url().to_string();
     let rpc_user = state.rpc.user().to_string();
     let rpc_pass = state.rpc.pass().to_string();
+    let state_ref = state.clone();
 
     let stream = tokio::task::spawn_blocking(move || {
         let rpc = RpcClient::new(&rpc_url, &rpc_user, &rpc_pass);
+        let chain_h = state_ref.chain_height.load(Ordering::Relaxed);
         let mut blocks = Vec::new();
 
         for height in heights {
-            match scanner::scan_block(&rpc, height) {
+            match scanner::scan_block(&rpc, height, &state_ref.block_cache, chain_h) {
                 Ok(Some(block)) => blocks.push(block),
-                Ok(None) => {} // Index was stale — block no longer has shield data
+                Ok(None) => {}
                 Err(e) => return Err(format!("scan error at height {height}: {e}")),
             }
         }
@@ -154,7 +203,7 @@ pub async fn get_shield_data(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task error: {e}")))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    log_timing(timer, "getshielddata");
+    log_timing(timer, "getshielddata (rpc)");
     Ok((
         StatusCode::OK,
         [("Content-Type", "application/octet-stream")],

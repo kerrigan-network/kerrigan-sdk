@@ -1,13 +1,25 @@
 /// Shield block index — tracks which blocks contain Sapling transactions.
 ///
-/// Persisted as a simple JSON file so the bridge doesn't need to rescan
-/// the entire chain on restart.
+/// Persisted as JSON. Tracks both block heights and byte offsets into
+/// shield.bin for instant buffer-slice serving.
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// An entry in the shield index: block height + byte offset into shield.bin.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndexEntry {
+    pub block: u32,
+    /// Byte offset into shield.bin where this block's data starts.
+    #[serde(default)]
+    pub offset: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShieldIndex {
-    /// Block heights that contain Sapling transactions.
+    /// Ordered list of shield block entries (with byte offsets).
+    pub entries: Vec<IndexEntry>,
+    /// Just the heights (for fast lookup).
+    #[serde(default)]
     pub shield_heights: Vec<u32>,
     /// Highest block we've scanned so far.
     pub last_scanned: u32,
@@ -16,6 +28,7 @@ pub struct ShieldIndex {
 impl ShieldIndex {
     pub fn new(start_height: u32) -> Self {
         Self {
+            entries: Vec::new(),
             shield_heights: Vec::new(),
             last_scanned: start_height.saturating_sub(1),
         }
@@ -42,20 +55,34 @@ impl ShieldIndex {
         std::fs::write(path, json)
     }
 
-    /// Record that a block at the given height has Sapling data.
-    pub fn add_shield_block(&mut self, height: u32) {
+    /// Record a shield block with its byte offset into shield.bin.
+    pub fn add(&mut self, height: u32, byte_offset: u64) {
         if !self.shield_heights.contains(&height) {
+            self.entries.push(IndexEntry { block: height, offset: byte_offset });
             self.shield_heights.push(height);
-            self.shield_heights.sort_unstable();
         }
+    }
+
+    /// Legacy: record a shield block without offset (backward compat).
+    pub fn add_shield_block(&mut self, height: u32) {
+        self.add(height, 0);
     }
 
     /// Get shield block heights >= start_block.
     pub fn heights_from(&self, start_block: u32) -> Vec<u32> {
-        self.shield_heights
-            .iter()
-            .copied()
-            .filter(|&h| h >= start_block)
-            .collect()
+        let idx = self.shield_heights.partition_point(|&h| h < start_block);
+        self.shield_heights[idx..].to_vec()
+    }
+
+    /// Get the byte offset for the first shield block >= start_block.
+    pub fn offset_for_height(&self, height: u32) -> Option<u64> {
+        let idx = self.entries.partition_point(|e| e.block < height);
+        self.entries.get(idx).map(|e| e.offset)
+    }
+
+    /// Remove all entries at or above the given height (for reorg handling).
+    pub fn remove_from(&mut self, height: u32) {
+        self.entries.retain(|e| e.block < height);
+        self.shield_heights.retain(|&h| h < height);
     }
 }
