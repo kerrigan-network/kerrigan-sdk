@@ -296,15 +296,39 @@ pub fn process_transactions(
     let utxos = state.derive_utxos();
     let balance = utxos.iter().fold(0u64, |a, u| a.saturating_add(u.amount));
 
-    // Merge history: new entries prepended to prior, deduplicated
+    // Merge history: new entries prepended to prior, deduplicated.
+    // Preserve tx_type and memo from prior entries (shield sends set these at
+    // send time, but transparent sync overwrites with empty fields).
     new_history.reverse();
-    let seen: HashSet<String> = new_history.iter().map(|e| e.txid.clone()).collect();
-    let mut history = new_history;
+    let prior_map: HashMap<String, &TxHistoryEntry> = prior_history.iter()
+        .map(|e| (e.txid.clone(), e))
+        .collect();
+    let mut history: Vec<TxHistoryEntry> = new_history.into_iter().map(|mut entry| {
+        if let Some(prior) = prior_map.get(&entry.txid) {
+            // Preserve shield metadata from prior (set at send time)
+            if entry.tx_type.is_empty() && !prior.tx_type.is_empty() {
+                entry.tx_type = prior.tx_type.clone();
+            }
+            if entry.memo.is_none() && prior.memo.is_some() {
+                entry.memo = prior.memo.clone();
+            }
+        }
+        entry
+    }).collect();
+    let seen: HashSet<String> = history.iter().map(|e| e.txid.clone()).collect();
     for entry in prior_history {
         if !seen.contains(&entry.txid) {
             history.push(entry.clone());
         }
     }
+
+    // Sort: pending (no confirmations) first, then by block height descending
+    history.sort_by(|a, b| {
+        let a_pending = a.confirmations.unwrap_or(0) == 0;
+        let b_pending = b.confirmations.unwrap_or(0) == 0;
+        b_pending.cmp(&a_pending)
+            .then_with(|| b.block_height.unwrap_or(0).cmp(&a.block_height.unwrap_or(0)))
+    });
 
     SyncResult {
         utxos,

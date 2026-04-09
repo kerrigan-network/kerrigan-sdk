@@ -806,13 +806,22 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
         let _ = sync_with_spinner(&mut wallet_data);
     }
 
-    // Sort: pending (no confirmations) first, then by block height descending
+    // Derive chain height from local data (no network call)
+    let chain_height = wallet_data.history.iter()
+        .filter_map(|e| e.block_height)
+        .max()
+        .unwrap_or(0);
+
+    // Recalculate confirmations from block_height (stored confs go stale)
+    for entry in &mut wallet_data.history {
+        entry.confirmations = entry.block_height
+            .map(|h| if chain_height >= h { chain_height - h + 1 } else { 0 });
+    }
+
+    // Sort: pending first, then by block height descending (newest first)
     wallet_data.history.sort_by(|a, b| {
-        let a_confs = a.confirmations.unwrap_or(0);
-        let b_confs = b.confirmations.unwrap_or(0);
-        let a_pending = a_confs == 0;
-        let b_pending = b_confs == 0;
-        // Pending first, then by block height descending (higher = newer)
+        let a_pending = a.block_height.is_none();
+        let b_pending = b.block_height.is_none();
         b_pending.cmp(&a_pending)
             .then_with(|| b.block_height.unwrap_or(0).cmp(&a.block_height.unwrap_or(0)))
     });
