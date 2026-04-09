@@ -10,6 +10,7 @@ use kerrigan_sdk::wallet::{WalletData, WalletError};
 pub struct SaplingSyncResult {
     pub new_notes: usize,
     pub spent: usize,
+    pub sent: usize,
 }
 
 /// Fetch the compact shield stream from the bridge HTTP endpoint.
@@ -47,14 +48,14 @@ pub fn apply_shield_data(
         .map_err(|e| WalletError::Other(format!("decode extfvk: {e}")))?;
 
     if stream_bytes.is_empty() {
-        return Ok(SaplingSyncResult { new_notes: 0, spent: 0 });
+        return Ok(SaplingSyncResult { new_notes: 0, spent: 0, sent: 0 });
     }
 
     let blocks = sync::parse_shield_stream(stream_bytes)
         .map_err(|e| WalletError::Other(format!("parse shield stream: {e}")))?;
 
     if blocks.is_empty() {
-        return Ok(SaplingSyncResult { new_notes: 0, spent: 0 });
+        return Ok(SaplingSyncResult { new_notes: 0, spent: 0, sent: 0 });
     }
 
     let max_height = blocks.iter().map(|b| b.height).max().unwrap_or(0);
@@ -80,8 +81,10 @@ pub fn apply_shield_data(
     all_notes.retain(|n| !result.spent_nullifiers.contains(&n.nullifier));
 
     wallet.unspent_notes = all_notes;
+    wallet.sent_notes.extend(result.sent_notes.iter().cloned());
     wallet.sapling_last_block = max_height;
 
-    Ok(SaplingSyncResult { new_notes: result.new_notes.len(), spent: spent_count })
+    let sent_count = result.sent_notes.len();
+    Ok(SaplingSyncResult { new_notes: result.new_notes.len(), spent: spent_count, sent: sent_count })
 }
 

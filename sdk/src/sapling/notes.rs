@@ -264,6 +264,22 @@ pub struct ShieldBlock {
 }
 
 /// Result of processing a batch of shield blocks.
+/// A sent (outgoing) note recovered via the outgoing viewing key.
+///
+/// Not spendable — the sender doesn't own this note. Used for
+/// transaction history: "I sent X KRGN to Y with memo Z".
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SentNote {
+    /// Note value in satoshis.
+    pub value: u64,
+    /// Bech32-encoded recipient payment address (`ks1...`).
+    pub recipient: String,
+    /// Decoded memo text, if present.
+    pub memo: Option<String>,
+    /// Block height at which this note was sent.
+    pub height: u32,
+}
+
 pub struct HandleBlocksResult {
     /// Updated commitment tree (hex).
     pub commitment_tree: String,
@@ -273,6 +289,8 @@ pub struct HandleBlocksResult {
     pub updated_notes: Vec<SerializedNote>,
     /// Nullifiers found in transaction spends (spent notes).
     pub spent_nullifiers: Vec<String>,
+    /// Outgoing notes recovered via OVK (for transaction history).
+    pub sent_notes: Vec<SentNote>,
 }
 
 /// Process a batch of shield blocks against the wallet state.
@@ -344,6 +362,7 @@ pub fn handle_blocks(
         new_notes,
         updated_notes,
         spent_nullifiers: all_nullifiers,
+        sent_notes: Vec::new(), // Legacy path — no OVK recovery (use process_shield_blocks instead)
     })
 }
 

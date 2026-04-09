@@ -156,14 +156,12 @@ fn sync_with_spinner(wallet_data: &mut wallet::WalletData) -> Result<kerrigan_sd
             Ok(Ok(stream_bytes)) => {
                 match crate::sapling_sync::apply_shield_data(wallet_data, &stream_bytes) {
                     Ok(r) => {
-                        if r.new_notes == 0 && r.spent == 0 {
+                        if r.new_notes == 0 && r.spent == 0 && r.sent == 0 {
                             shield_spinner.finish_with("No new shield activity");
                         } else {
                             shield_spinner.finish_with(&format!(
-                                "{} new note{}, {} spent",
-                                r.new_notes,
-                                if r.new_notes == 1 { "" } else { "s" },
-                                r.spent,
+                                "{} received, {} spent, {} sent",
+                                r.new_notes, r.spent, r.sent,
                             ));
                         }
                     }

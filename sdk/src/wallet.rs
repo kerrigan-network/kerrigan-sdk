@@ -111,6 +111,10 @@ pub struct WalletData {
     #[serde(default)]
     pub unspent_notes: Vec<SerializedNote>,
 
+    /// Sent (outgoing) shielded notes recovered via OVK.
+    #[serde(default)]
+    pub sent_notes: Vec<crate::sapling::notes::SentNote>,
+
     /// Last synced shield block height.
     #[serde(default)]
     pub sapling_last_block: u32,
@@ -227,6 +231,7 @@ fn wallet_from_mnemonic(mnemonic: &str) -> Result<WalletData, WalletError> {
         sapling_address: Some(sapling::keys::encode_payment_address(&sapling_addr)),
         commitment_tree: None,
         unspent_notes: Vec::new(),
+        sent_notes: Vec::new(),
         sapling_last_block: 0,
     })
 }
@@ -312,6 +317,7 @@ pub fn encrypt_wallet(data: &WalletData, key: &[u8; 32]) -> WalletData {
         sapling_address: data.sapling_address.clone(),
         commitment_tree: data.commitment_tree.clone(),
         unspent_notes: data.unspent_notes.clone(),
+        sent_notes: data.sent_notes.clone(),
         sapling_last_block: data.sapling_last_block,
     }
 }

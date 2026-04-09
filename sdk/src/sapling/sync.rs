@@ -28,9 +28,13 @@
 /// Compact+ (0x05) additionally strips cv and out_ciphertext for rapid
 /// bootstrap of freshly created wallets that have no history to recover.
 use sapling::note_encryption::{PreparedIncomingViewingKey, SaplingDomain, Zip212Enforcement};
+use sapling::value::ValueCommitment;
 use sapling::zip32::ExtendedFullViewingKey;
 use sapling::{Node, NullifierDerivingKey};
-use zcash_note_encryption::{try_note_decryption, EphemeralKeyBytes, ShieldedOutput, ENC_CIPHERTEXT_SIZE};
+use zcash_note_encryption::{
+    try_note_decryption, try_output_recovery_with_ovk,
+    EphemeralKeyBytes, ShieldedOutput, ENC_CIPHERTEXT_SIZE,
+};
 
 use crate::encoding;
 use super::keys;
@@ -557,14 +561,16 @@ pub fn process_compact_transaction(
     new_notes: &mut Vec<SpendableNote>,
     block_height: u32,
     spent_nullifiers: &mut Vec<String>,
+    sent_notes: &mut Vec<notes::SentNote>,
 ) -> Result<(), ShieldSyncError> {
     // Collect spent nullifiers
     for nf in &tx.nullifiers {
         spent_nullifiers.push(encoding::hex_encode(nf));
     }
 
-    // Prepare decryption key
+    // Prepare decryption keys
     let ivk = PreparedIncomingViewingKey::new(&extfvk.fvk.vk.ivk());
+    let ovk = &extfvk.fvk.ovk;
 
     // Process each output
     for output in &tx.outputs {
@@ -588,7 +594,7 @@ pub fn process_compact_transaction(
                 .map_err(|e| ShieldSyncError::Tree(e.to_string()))?;
         }
 
-        // 3. Try decryption directly on the compact output
+        // 3. Try IVK decryption (incoming notes — ours to spend)
         let domain = SaplingDomain::new(Zip212Enforcement::On);
         if let Some((note, _recipient, memo_bytes)) =
             try_note_decryption(&domain, &ivk, output)
@@ -608,6 +614,24 @@ pub fn process_compact_transaction(
                 memo,
                 height: block_height,
             });
+            continue; // IVK matched — skip OVK (it's our own note, not a send)
+        }
+
+        // 4. Try OVK recovery (outgoing notes — we sent to someone else)
+        //    Requires cv + out_ciphertext from compact (0x04) packets.
+        if let Some(out_ct) = &output.out_ciphertext {
+            if let Some(cv) = ValueCommitment::from_bytes_not_small_order(&output.cv).into_option() {
+                if let Some((note, recipient, memo_bytes)) =
+                    try_output_recovery_with_ovk(&domain, ovk, output, &cv, out_ct)
+                {
+                    sent_notes.push(notes::SentNote {
+                        value: note.value().inner(),
+                        recipient: keys::encode_payment_address(&recipient),
+                        memo: decode_memo(&memo_bytes),
+                        height: block_height,
+                    });
+                }
+            }
         }
     }
 
@@ -648,34 +672,28 @@ pub fn process_shield_blocks(
 
     let mut all_new: Vec<SpendableNote> = Vec::new();
     let mut all_nullifiers: Vec<String> = Vec::new();
+    let mut all_sent: Vec<notes::SentNote> = Vec::new();
 
     for block in blocks {
         for entry in &block.entries {
             match entry {
                 BlockEntry::CompactTx(compact) => {
                     process_compact_transaction(
-                        &mut tree,
-                        compact,
-                        extfvk,
-                        &nk,
-                        &mut existing,
-                        &mut all_new,
-                        block.height,
-                        &mut all_nullifiers,
+                        &mut tree, compact, extfvk, &nk,
+                        &mut existing, &mut all_new,
+                        block.height, &mut all_nullifiers, &mut all_sent,
                     )?;
                 }
                 BlockEntry::FullTx(tx_bytes) => {
-                    // Parse the Kerrigan type 10 raw tx into compact data,
-                    // then process via the same path as compact txs.
                     match parse_kerrigan_full_tx(tx_bytes) {
                         Ok(Some(compact)) => {
                             process_compact_transaction(
                                 &mut tree, &compact, extfvk, &nk,
                                 &mut existing, &mut all_new,
-                                block.height, &mut all_nullifiers,
+                                block.height, &mut all_nullifiers, &mut all_sent,
                             )?;
                         }
-                        Ok(None) => {} // No shielded data in this tx
+                        Ok(None) => {}
                         Err(e) => {
                             eprintln!("  Warning: full tx parse failed: {e}");
                         }
@@ -706,6 +724,7 @@ pub fn process_shield_blocks(
         new_notes,
         updated_notes,
         spent_nullifiers: all_nullifiers,
+        sent_notes: all_sent,
     })
 }
 
