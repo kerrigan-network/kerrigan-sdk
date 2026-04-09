@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(restored.nullifier, note.nullifier);
         assert_eq!(restored.memo, note.memo);
         assert_eq!(restored.height, note.height);
-        assert_eq!(restored.rseed_after_zip212, true);
+        assert!(restored.rseed_after_zip212);
     }
 
     #[test]

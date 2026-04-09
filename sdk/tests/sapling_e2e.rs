@@ -1,7 +1,7 @@
-/// End-to-end Sapling tests for the Kerrigan Network.
-///
-/// All test data is synthetic (deterministic seeds, zero-filled arrays).
-/// No real wallet keys or mainnet data.
+//! End-to-end Sapling tests for the Kerrigan Network.
+//!
+//! All test data is synthetic (deterministic seeds, zero-filled arrays).
+//! No real wallet keys or mainnet data.
 
 use kerrigan_sdk::sapling;
 use ::sapling::Node;
@@ -788,7 +788,7 @@ fn note_decryption_positive_path() {
     let extsk = sapling::keys::default_spending_key(&seed).unwrap();
     let extfvk = sapling::keys::full_viewing_key(&extsk);
     let addr = sapling::keys::default_payment_address(&extfvk);
-    let nk = sapling::keys::nullifier_deriving_key(&extfvk);
+    let _nk = sapling::keys::nullifier_deriving_key(&extfvk);
 
     // Build a sapling bundle with one output to our address
     let mut builder = ::sapling::builder::Builder::new(
@@ -798,8 +798,6 @@ fn note_decryption_positive_path() {
     );
 
     builder.add_output(None, addr, NoteValue::from_raw(50_000_000), None).unwrap();
-
-    use ::sapling::circuit::{SpendParameters, OutputParameters};
     // We can't generate real proofs without ~50MB params, but we CAN test
     // that the builder accepts our address and value.
     // For full decryption testing, we'd need the params — skip for now.

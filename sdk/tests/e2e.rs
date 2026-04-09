@@ -1,10 +1,10 @@
-/// End-to-end integration tests for the kerrigan-wallet.
-///
-/// Tests the full wallet lifecycle without hitting the network:
-/// mnemonic → seed → keypair → address → UTXOs → transaction → sign → verify.
-///
-/// Each test exercises multiple modules working together, catching integration
-/// bugs that unit tests alone would miss.
+//! End-to-end integration tests for the kerrigan-wallet.
+//!
+//! Tests the full wallet lifecycle without hitting the network:
+//! mnemonic → seed → keypair → address → UTXOs → transaction → sign → verify.
+//!
+//! Each test exercises multiple modules working together, catching integration
+//! bugs that unit tests alone would miss.
 
 use kerrigan_sdk::bip39;
 use kerrigan_sdk::bip32;
@@ -48,13 +48,13 @@ fn e2e_create_and_sign() {
         transaction::Utxo {
             txid: "a".repeat(64),
             vout: 0,
-            amount: 5_000_000_00, // 5 KRGN
+            amount: 500_000_000, // 5 KRGN
             script_pubkey: encoding::hex_encode(&own_script),
         },
         transaction::Utxo {
             txid: "b".repeat(64),
             vout: 1,
-            amount: 3_000_000_00, // 3 KRGN
+            amount: 300_000_000, // 3 KRGN
             script_pubkey: encoding::hex_encode(&own_script),
         },
     ];
@@ -67,7 +67,7 @@ fn e2e_create_and_sign() {
     let signed = transaction::build_transaction(
         &utxos,
         &dest_kp.address,
-        2_000_000_00, // send 2 KRGN
+        200_000_000, // send 2 KRGN
         &kp.privkey,
         &kp.pubkey,
         &kp.address,
@@ -307,7 +307,7 @@ fn e2e_amount_formatting() {
         (546, "0.00000546"), // dust threshold
         (100_000_000, "1.00000000"),
         (123_456_789, "1.23456789"),
-        (21_000_000_00000000, "21000000.00000000"), // max supply scale
+        (2_100_000_000_000_000, "21000000.00000000"), // max supply scale
     ];
 
     for (sats, expected) in &test_cases {
@@ -451,9 +451,9 @@ fn e2e_bip32_path_consistency() {
     // Derive step by step
     let step1 = master.derive_child(44 | 0x80000000).unwrap();
     let step2 = step1.derive_child(99888 | 0x80000000).unwrap();
-    let step3 = step2.derive_child(0 | 0x80000000).unwrap();
-    let step4 = step3.derive_child(0).unwrap();
-    let step5 = step4.derive_child(0).unwrap();
+    let step3 = step2.derive_child(0x80000000).unwrap(); // account 0'
+    let step4 = step3.derive_child(0).unwrap();          // external chain
+    let step5 = step4.derive_child(0).unwrap();          // index 0
 
     assert_eq!(via_path.public_key_bytes(), step5.public_key_bytes());
     assert_eq!(via_path.private_key_bytes(), step5.private_key_bytes());
@@ -521,7 +521,7 @@ fn e2e_sync_history_no_duplicates() {
 
     // Second sync with same txs — should dedup
     let result2 = sync::process_transactions(
-        Some(result1.state), &[tx2.clone()], addr, &result1.history,
+        Some(result1.state), std::slice::from_ref(&tx2), addr, &result1.history,
     );
     assert_eq!(result2.history.len(), 2, "Duplicate should be deduped");
 }

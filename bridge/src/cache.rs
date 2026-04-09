@@ -149,6 +149,7 @@ impl BlockCache {
     }
 
     /// Return `(hits, misses, cached_blocks)` for logging.
+    #[allow(dead_code)]
     pub fn stats(&self) -> (u64, u64, usize) {
         (
             self.hits.load(Ordering::Relaxed),
