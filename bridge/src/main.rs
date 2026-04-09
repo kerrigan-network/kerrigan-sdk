@@ -191,15 +191,19 @@ async fn main() {
     println!("  Chain height: {chain_height}");
 
     // Load or create shield index
-    let mut index = ShieldIndex::load_or_new(&config.index_path, config.start_height);
+    let (mut index, index_rebuilt) = ShieldIndex::load_or_new(&config.index_path, config.start_height);
     let scan_from = index.last_scanned + 1;
 
     // Block cache — 1000 blocks covers the tip range where most traffic is
     let block_cache = std::sync::RwLock::new(BlockCache::new(1000));
 
-    // Recover shield.bin on crash
+    // Recover shield.bin on crash, or truncate if index was rebuilt from scratch
     let cache_path = "shield.bin";
-    if let Some(last_good) = shield_cache::recover_cache(cache_path) {
+    if index_rebuilt {
+        // Index format changed or was corrupt — truncate shield.bin to avoid duplicates
+        eprintln!("  Index rebuilt — truncating shield.bin");
+        std::fs::write(cache_path, []).ok();
+    } else if let Some(last_good) = shield_cache::recover_cache(cache_path) {
         eprintln!("  Cache recovered — last complete block: {last_good}");
     }
     let mut cache_file = shield_cache::open_cache(cache_path)

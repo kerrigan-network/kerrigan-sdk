@@ -35,17 +35,20 @@ impl ShieldIndex {
     }
 
     /// Load from a JSON file, or create a new index if the file doesn't exist.
-    pub fn load_or_new(path: &str, start_height: u32) -> Self {
+    ///
+    /// Returns `(index, was_rebuilt)` — if `was_rebuilt` is true, the caller
+    /// should truncate shield.bin to avoid duplicate data.
+    pub fn load_or_new(path: &str, start_height: u32) -> (Self, bool) {
         if Path::new(path).exists() {
             match std::fs::read_to_string(path) {
                 Ok(json) => match serde_json::from_str(&json) {
-                    Ok(index) => return index,
+                    Ok(index) => return (index, false),
                     Err(e) => eprintln!("Warning: corrupt index file, starting fresh: {e}"),
                 },
                 Err(e) => eprintln!("Warning: can't read index file, starting fresh: {e}"),
             }
         }
-        Self::new(start_height)
+        (Self::new(start_height), true)
     }
 
     /// Persist to a JSON file.

@@ -674,6 +674,13 @@ pub fn process_shield_blocks(
     let mut all_nullifiers: Vec<String> = Vec::new();
     let mut all_sent: Vec<notes::SentNote> = Vec::new();
 
+    // Deduplicate blocks by height — prevents double-processing if the
+    // bridge stream contains duplicate data (e.g. after index rebuild).
+    let mut seen_heights = std::collections::HashSet::new();
+    let blocks: Vec<&RawShieldBlock> = blocks.iter()
+        .filter(|b| seen_heights.insert(b.height))
+        .collect();
+
     for block in blocks {
         for entry in &block.entries {
             match entry {
