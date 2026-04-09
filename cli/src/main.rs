@@ -959,16 +959,17 @@ fn cmd_sync() -> Result<(), WalletError> {
     wallet_data.sapling_last_block = 0;
 
     println!();
-    let result = sync_with_spinner(&mut wallet_data)?;
+    let _result = sync_with_spinner(&mut wallet_data)?;
 
+    let total = wallet_data.balance() + wallet_data.shielded_balance();
     println!();
-    println!("  {} {} KRGN  {} {} UTXOs  {} {} txs",
-        term::dim("Balance:"),
-        term::green_bold(&wallet_data.balance_display()),
-        term::dim("│"),
-        wallet_data.utxos.len(),
-        term::dim("│"),
-        result.processed_txids.len(),
+    println!("  {} {} KRGN  {} {} KRGN  {} {} KRGN",
+        term::dim("Public:"),
+        term::green_bold(&wallet::format_krgn(wallet_data.balance())),
+        term::dim("│ Private:"),
+        term::green_bold(&wallet::format_krgn(wallet_data.shielded_balance())),
+        term::dim("│ Total:"),
+        term::bold(&wallet::format_krgn(total)),
     );
     println!();
 
