@@ -46,6 +46,7 @@ pub fn build_shield(
     from_address: &str,
     to_shielded: &PaymentAddress,
     amount: u64,
+    memo: Option<[u8; 512]>,
     _block_height: u32,
     prover: &SaplingProver,
 ) -> Result<SaplingTxResult, SaplingBuilderError> {
@@ -80,7 +81,7 @@ pub fn build_shield(
     );
 
     sapling_builder
-        .add_output(None, *to_shielded, NoteValue::from_raw(amount), None)
+        .add_output(None, *to_shielded, NoteValue::from_raw(amount), memo)
         .map_err(|e| SaplingBuilderError::Build(format!("add output: {e:?}")))?;
 
     let dummy_extsk = keys::default_spending_key(&[0u8; 64])

@@ -395,7 +395,7 @@ fn cmd_send(args: &[String]) -> Result<(), WalletError> {
             } else {
                 wallet::parse_krgn(amount_str)?
             };
-            send_shield(&mut wallet_data, to_address, amount)
+            send_shield(&mut wallet_data, to_address, amount, _memo)
         }
         (true, false) => {
             // Private → Public (unshielding)
@@ -493,6 +493,7 @@ fn send_shield(
     wallet_data: &mut WalletData,
     to_address: &str,
     amount: u64,
+    memo: &str,
 ) -> Result<(), WalletError> {
     // Decode shielded destination
     let to_shielded = kerrigan_sdk::sapling::keys::decode_payment_address(to_address)
@@ -543,6 +544,14 @@ fn send_shield(
 
     // Build the shielding transaction
     let spinner = Spinner::start("Building shield transaction");
+    let memo_bytes = if memo.is_empty() {
+        None
+    } else {
+        let mut m = [0u8; 512];
+        let bytes = memo.as_bytes();
+        m[..bytes.len().min(512)].copy_from_slice(&bytes[..bytes.len().min(512)]);
+        Some(m)
+    };
     let result = kerrigan_sdk::sapling::builder::build_shield(
         &wallet_data.utxos,
         &kp.privkey,
@@ -550,6 +559,7 @@ fn send_shield(
         &wallet_data.address,
         &to_shielded,
         amount,
+        memo_bytes,
         block_height,
         &prover,
     ).map_err(|e| WalletError::Transaction(format!("{e}")))?;
@@ -579,6 +589,7 @@ fn send_shield(
         block_height: None,
         confirmations: None,
         tx_type: "shield".to_string(),
+        memo: if memo.is_empty() { None } else { Some(memo.to_string()) },
     });
 
     // Update wallet state — remove spent UTXOs
@@ -676,6 +687,7 @@ fn send_sapling(
         block_height: None,
         confirmations: None,
         tx_type: "private".to_string(),
+        memo: if memo.is_empty() { None } else { Some(memo.to_string()) },
     });
     wallet_data.unspent_notes.retain(|n| !result.nullifiers.contains(&n.nullifier));
     crate::storage::save_wallet(wallet_data)?;
@@ -747,6 +759,7 @@ fn send_unshield(
         block_height: None,
         confirmations: None,
         tx_type: "unshield".to_string(),
+        memo: None,
     });
     wallet_data.unspent_notes.retain(|n| !result.nullifiers.contains(&n.nullifier));
     crate::storage::save_wallet(wallet_data)?;
@@ -896,6 +909,12 @@ fn cmd_history(args: &[String]) -> Result<(), WalletError> {
             term::dim(&confs_padded),
             date,
         );
+
+        // Show memo on its own line, indented, if present
+        if let Some(memo) = &entry.memo {
+            let display = if memo.len() > 60 { format!("{}...", &memo[..57]) } else { memo.clone() };
+            println!("     {}", term::dim(&format!("\"{}\"", display)));
+        }
     }
 
     term::divider(divider_width);

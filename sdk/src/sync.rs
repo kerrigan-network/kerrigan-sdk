@@ -122,6 +122,9 @@ pub struct TxHistoryEntry {
     /// Transaction type label (empty = transparent, "shield", "unshield", "private").
     #[serde(default)]
     pub tx_type: String,
+    /// Memo text attached to shielded transactions, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +249,7 @@ impl SyncState {
             block_height: tx.block_height,
             confirmations: tx.confirmations,
             tx_type: String::new(), // transparent
+            memo: None,
         }
     }
 
