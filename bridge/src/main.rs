@@ -93,18 +93,28 @@ fn index_new_blocks(
 
     match scanner::scan_range(&rpc, scan_from, chain_height, &state.block_cache, chain_height, |_, _| {}) {
         Ok(blocks) => {
-            let count = blocks.len();
-
-            // Encode new blocks for the shield buffer
-            let new_bytes = stream::encode_shield_stream(
-                &blocks, api::StreamFormat::Compact,
-            );
-
             rt.block_on(async {
+                // Filter against index to prevent ZMQ+poll race duplicates
+                let index = state.index.read().await;
+                let new_blocks: Vec<_> = blocks.iter()
+                    .filter(|b| !index.shield_heights.contains(&b.height))
+                    .cloned()
+                    .collect();
+                drop(index);
+
+                if new_blocks.is_empty() {
+                    return;
+                }
+
+                let count = new_blocks.len();
+                let new_bytes = stream::encode_shield_stream(
+                    &new_blocks, api::StreamFormat::Compact,
+                );
+
                 // Append to shield.bin on disk
                 let cache_entries = {
                     let mut file = state.cache_file.lock().await;
-                    shield_cache::append_blocks(&mut file, &blocks).ok()
+                    shield_cache::append_blocks(&mut file, &new_blocks).ok()
                 };
 
                 // Append to in-memory buffer
@@ -120,16 +130,17 @@ fn index_new_blocks(
                         index.add(height, offset);
                     }
                 } else {
-                    for block in &blocks {
+                    for block in &new_blocks {
                         index.add_shield_block(block.height);
                     }
                 }
                 index.last_scanned = chain_height;
                 let _ = index.save(index_path);
+
+                if count > 0 {
+                    eprintln!("  [{source}] Indexed {count} new shield block(s) (chain: {chain_height})");
+                }
             });
-            if count > 0 {
-                eprintln!("  [{source}] Indexed {count} new shield block(s) (chain: {chain_height})");
-            }
         }
         Err(e) => {
             eprintln!("  [{source}] Scan error: {e}");
@@ -268,6 +279,7 @@ async fn main() {
         hash_cache: RwLock::new(api::HashCache::new(1000)),
         block_cache,
         chain_height: AtomicU32::new(chain_height),
+        zmq_active: std::sync::atomic::AtomicBool::new(false),
         cache_file: tokio::sync::Mutex::new(cache_file),
         shield_buffer: RwLock::new(shield_buffer),
     });
@@ -294,11 +306,13 @@ async fn main() {
                 eprintln!("  [zmq] Subscribing to {zmq_url}...");
                 let mut subscriber = match bitcoincore_zmq::subscribe_async(&[&zmq_url]) {
                     Ok(sub) => {
-                        eprintln!("  [zmq] Connected");
+                        s.zmq_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("  [zmq] Connected — polling disabled");
                         sub
                     }
                     Err(e) => {
-                        eprintln!("  [zmq] Failed: {e} — retrying in 30s");
+                        s.zmq_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("  [zmq] Failed: {e} — polling re-enabled, retrying in 30s");
                         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                         continue;
                     }
@@ -308,7 +322,8 @@ async fn main() {
                     let msg = match msg {
                         Ok(m) => m,
                         Err(e) => {
-                            eprintln!("  [zmq] Error: {e} — reconnecting");
+                            s.zmq_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                        eprintln!("  [zmq] Error: {e} — polling re-enabled, reconnecting");
                             break;
                         }
                     };
@@ -339,9 +354,13 @@ async fn main() {
         let rpc_pass = config.rpc_pass.clone();
         let index_path = config.index_path.clone();
         tokio::spawn(async move {
-            eprintln!("  [poll] Active (10s interval)");
+            eprintln!("  [poll] Standby (10s interval, active when ZMQ is down)");
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+                if s.zmq_active.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
 
                 // Quick check: does last scanned block have a nextblockhash?
                 let last_scanned = s.index.read().await.last_scanned;

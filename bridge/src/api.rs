@@ -42,6 +42,8 @@ pub struct AppState {
     pub block_cache: std::sync::RwLock<BlockCache>,
     /// Current chain height — updated by ZMQ/polling, used for rehydration.
     pub chain_height: AtomicU32,
+    /// True when ZMQ is connected and receiving blocks. Polling is disabled.
+    pub zmq_active: std::sync::atomic::AtomicBool,
     /// Persistent shield.bin cache file handle.
     pub cache_file: tokio::sync::Mutex<std::fs::File>,
     /// In-memory shield buffer — the entire shield.bin held in RAM.
