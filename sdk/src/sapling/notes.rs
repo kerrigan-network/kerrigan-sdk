@@ -280,6 +280,7 @@ pub struct SentNote {
     pub height: u32,
 }
 
+#[derive(serde::Serialize)]
 pub struct HandleBlocksResult {
     /// Updated commitment tree (hex).
     pub commitment_tree: String,

@@ -68,7 +68,7 @@ const OUT_CT_SIZE: usize = 80;
 // ---------------------------------------------------------------------------
 
 /// A parsed shield block from the binary stream.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawShieldBlock {
     /// Block height.
     pub height: u32,
@@ -77,7 +77,7 @@ pub struct RawShieldBlock {
 }
 
 /// A single entry within a shield block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum BlockEntry {
     /// Full raw transaction bytes (type 0x03).
     FullTx(Vec<u8>),
@@ -86,7 +86,7 @@ pub enum BlockEntry {
 }
 
 /// Compact transaction — proofs and signatures stripped.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompactTransaction {
     /// Nullifiers from Sapling spends (32 bytes each).
     pub nullifiers: Vec<[u8; 32]>,
@@ -106,9 +106,42 @@ pub struct CompactSaplingOutput {
     /// Encrypted ciphertext (580 bytes).
     pub enc_ciphertext: [u8; ENC_CT_SIZE],
     /// Outgoing ciphertext (80 bytes) — present in compact (0x04) packets.
-    /// Enables sender-side note recovery via the outgoing viewing key.
-    /// Requires cv to derive the outgoing cipher key.
     pub out_ciphertext: Option<[u8; OUT_CT_SIZE]>,
+}
+
+// Custom serde for CompactSaplingOutput — large arrays as hex strings
+impl serde::Serialize for CompactSaplingOutput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("CompactSaplingOutput", 5)?;
+        st.serialize_field("cv", &encoding::hex_encode(&self.cv))?;
+        st.serialize_field("cmu", &encoding::hex_encode(&self.cmu))?;
+        st.serialize_field("epk", &encoding::hex_encode(&self.epk))?;
+        st.serialize_field("enc_ciphertext", &encoding::hex_encode(&self.enc_ciphertext))?;
+        st.serialize_field("out_ciphertext", &self.out_ciphertext.as_ref().map(|c| encoding::hex_encode(c)))?;
+        st.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CompactSaplingOutput {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Helper { cv: String, cmu: String, epk: String, enc_ciphertext: String, out_ciphertext: Option<String> }
+        let h = Helper::deserialize(d)?;
+        let cv: [u8; 32] = encoding::hex_decode(&h.cv).map_err(serde::de::Error::custom)?
+            .try_into().map_err(|_| serde::de::Error::custom("cv wrong length"))?;
+        let cmu: [u8; 32] = encoding::hex_decode(&h.cmu).map_err(serde::de::Error::custom)?
+            .try_into().map_err(|_| serde::de::Error::custom("cmu wrong length"))?;
+        let epk: [u8; 32] = encoding::hex_decode(&h.epk).map_err(serde::de::Error::custom)?
+            .try_into().map_err(|_| serde::de::Error::custom("epk wrong length"))?;
+        let enc_ciphertext: [u8; ENC_CT_SIZE] = encoding::hex_decode(&h.enc_ciphertext).map_err(serde::de::Error::custom)?
+            .try_into().map_err(|_| serde::de::Error::custom("enc wrong length"))?;
+        let out_ciphertext = h.out_ciphertext.map(|s| -> Result<[u8; OUT_CT_SIZE], _> {
+            encoding::hex_decode(&s).map_err(serde::de::Error::custom)?
+                .try_into().map_err(|_| serde::de::Error::custom("out_ct wrong length"))
+        }).transpose()?;
+        Ok(Self { cv, cmu, epk, enc_ciphertext, out_ciphertext })
+    }
 }
 
 /// Implement `ShieldedOutput` so `try_note_decryption` works directly.

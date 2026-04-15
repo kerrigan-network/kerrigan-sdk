@@ -5,6 +5,12 @@ edition = "2021"
 description = "Kerrigan Network SDK — pure-Rust wallet primitives with Sapling shield support"
 license = "MIT"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [dependencies]
 # Audited cryptographic primitives
 secp256k1 = { version = "0.29", features = ["global-context"] }
@@ -20,7 +26,7 @@ serde_json = "1"
 zeroize = { version = "1.8", features = ["derive"] }
 
 # Entropy
-getrandom = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
 
 # Sapling shielded transactions (librustpivx — PIVX fork of zcash libs)
 sapling = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase" }
@@ -33,3 +39,5 @@ zcash_note_encryption = "0.4"
 incrementalmerkletree = "0.7"
 rand_core = { version = "0.6", features = ["std"] }
 jubjub = "0.10"
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"

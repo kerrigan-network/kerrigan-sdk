@@ -27,3 +27,6 @@ pub mod transaction;
 pub mod sync;
 pub mod wallet;
 pub mod sapling;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
