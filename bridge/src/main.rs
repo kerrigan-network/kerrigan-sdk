@@ -290,6 +290,7 @@ async fn main() {
         .route("/getblockcount", get(api::get_block_count))
         .route("/getshieldblocks", get(api::get_shield_blocks))
         .route("/sendrawtransaction", post(api::send_raw_transaction))
+        .route("/params/{filename}", get(api::serve_sapling_params))
         .with_state(state.clone());
 
     // ZMQ listener — instant block notifications when it works

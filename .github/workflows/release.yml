@@ -56,11 +56,24 @@ jobs:
           fi
         shell: bash
 
+      - name: Build bridge (Unix only)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p kerrigan-bridge
+          else
+            cargo build --release --target ${{ matrix.target }} -p kerrigan-bridge
+          fi
+        shell: bash
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../kerrigan-wallet-${{ matrix.name }}.tar.gz kerrigan-wallet
+          if [ -f kerrigan-bridge ]; then
+            tar czf ../../../kerrigan-bridge-${{ matrix.name }}.tar.gz kerrigan-bridge
+          fi
         shell: bash
 
       - name: Package (Windows)
@@ -70,11 +83,19 @@ jobs:
           7z a ../../../kerrigan-wallet-${{ matrix.name }}.zip kerrigan-wallet.exe
         shell: bash
 
-      - name: Upload artifact
+      - name: Upload wallet artifact
         uses: actions/upload-artifact@v4
         with:
           name: kerrigan-wallet-${{ matrix.name }}
           path: kerrigan-wallet-${{ matrix.name }}.*
+
+      - name: Upload bridge artifact
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kerrigan-bridge-${{ matrix.name }}
+          path: kerrigan-bridge-${{ matrix.name }}.*
+          if-no-files-found: ignore
 
   release:
     needs: build
@@ -86,12 +107,13 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        run: sha256sum kerrigan-wallet-* > checksums.txt
+        run: sha256sum kerrigan-wallet-* kerrigan-bridge-* > checksums.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             kerrigan-wallet-*
+            kerrigan-bridge-*
             checksums.txt
           generate_release_notes: true

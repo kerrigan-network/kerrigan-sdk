@@ -28,5 +28,8 @@ zcash_note_encryption = "0.4"
 bitcoincore-zmq = { version = "1.5", features = ["async"] }
 futures = "0.3"
 
+# HTTP client (for proxying Sapling params)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
 # Utilities
 sha2 = "0.10"

@@ -3,8 +3,8 @@ use std::io::Write;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
@@ -315,4 +315,69 @@ pub async fn send_raw_transaction(
             Err((StatusCode::BAD_REQUEST, msg))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GET /params/:filename — proxy Sapling proving parameters with CORS
+// ---------------------------------------------------------------------------
+
+/// Proxy Sapling parameter files from download.z.cash with CORS headers.
+/// Cached in memory after first fetch to avoid repeated downloads.
+static PARAMS_CACHE: std::sync::LazyLock<tokio::sync::RwLock<std::collections::HashMap<String, Vec<u8>>>> =
+    std::sync::LazyLock::new(|| tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
+pub async fn serve_sapling_params(
+    Path(filename): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Only allow known param files
+    if filename != "sapling-output.params" && filename != "sapling-spend.params" {
+        return Err((StatusCode::NOT_FOUND, "Unknown params file".into()));
+    }
+
+    // Check cache
+    {
+        let cache = PARAMS_CACHE.read().await;
+        if let Some(data) = cache.get(&filename) {
+            return Ok((
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream"),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                    (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                ],
+                data.clone(),
+            ));
+        }
+    }
+
+    // Fetch from z.cash
+    let url = format!("https://download.z.cash/downloads/{filename}");
+    eprintln!("  [params] Downloading {filename} from {url}...");
+
+    let resp = reqwest::get(&url).await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Download failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err((StatusCode::BAD_GATEWAY, format!("Upstream returned {}", resp.status())));
+    }
+
+    let bytes = resp.bytes().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Read failed: {e}")))?;
+    let data = bytes.to_vec();
+
+    eprintln!("  [params] Cached {filename} ({} bytes)", data.len());
+
+    // Cache
+    {
+        let mut cache = PARAMS_CACHE.write().await;
+        cache.insert(filename, data.clone());
+    }
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        data,
+    ))
 }
