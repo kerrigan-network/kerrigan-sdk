@@ -341,7 +341,6 @@ pub async fn serve_sapling_params(
             return Ok((
                 [
                     (header::CONTENT_TYPE, "application/octet-stream"),
-                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
                     (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
                 ],
                 data.clone(),
@@ -375,7 +374,6 @@ pub async fn serve_sapling_params(
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         data,
