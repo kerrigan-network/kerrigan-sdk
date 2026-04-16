@@ -29,7 +29,11 @@ pub struct Config {
     #[arg(long, default_value_t = 500)]
     pub start_height: u32,
 
-    /// Path to persist the shield block index (JSON)
-    #[arg(long, default_value = "shield_index.json")]
-    pub index_path: String,
+    /// Directory where persistent state lives (`shield.bin` and `shield_index.json`).
+    /// Resolved to an absolute path at startup and logged; defaults to the current
+    /// working directory. Prefer setting this explicitly in production (e.g.
+    /// `/var/lib/kerrigan-bridge`) so state doesn't depend on where the daemon
+    /// happens to have been launched from.
+    #[arg(long, env = "KERRIGAN_BRIDGE_DATA_DIR", default_value = ".")]
+    pub data_dir: String,
 }

@@ -185,6 +185,23 @@ async fn main() {
     println!("  Kerrigan Bridge v{}", env!("CARGO_PKG_VERSION"));
     println!("  Node:  {}", config.rpc_url);
     println!("  Port:  {}", config.port);
+
+    // Resolve data_dir to an absolute path. Create it if missing, fail fast if
+    // that's not possible. Logging the resolved path here is what lets ops
+    // notice a "you're-writing-state-to-the-wrong-place" restart before it
+    // silently orphans shield.bin in an unrelated directory.
+    let data_dir = match std::fs::create_dir_all(&config.data_dir)
+        .and_then(|_| std::fs::canonicalize(&config.data_dir))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to prepare data-dir {:?}: {e}", config.data_dir);
+            std::process::exit(1);
+        }
+    };
+    let index_path: String = data_dir.join("shield_index.json").to_string_lossy().into_owned();
+    let cache_path: String = data_dir.join("shield.bin").to_string_lossy().into_owned();
+    println!("  State: {}", data_dir.display());
     println!();
 
     // Connect to node
@@ -202,22 +219,21 @@ async fn main() {
     println!("  Chain height: {chain_height}");
 
     // Load or create shield index
-    let (mut index, index_rebuilt) = ShieldIndex::load_or_new(&config.index_path, config.start_height);
+    let (mut index, index_rebuilt) = ShieldIndex::load_or_new(&index_path, config.start_height);
     let scan_from = index.last_scanned + 1;
 
     // Block cache — 1000 blocks covers the tip range where most traffic is
     let block_cache = std::sync::RwLock::new(BlockCache::new(1000));
 
     // Recover shield.bin on crash, or truncate if index was rebuilt from scratch
-    let cache_path = "shield.bin";
     if index_rebuilt {
         // Index format changed or was corrupt — truncate shield.bin to avoid duplicates
         eprintln!("  Index rebuilt — truncating shield.bin");
-        std::fs::write(cache_path, []).ok();
-    } else if let Some(last_good) = shield_cache::recover_cache(cache_path) {
+        std::fs::write(&cache_path, []).ok();
+    } else if let Some(last_good) = shield_cache::recover_cache(&cache_path) {
         eprintln!("  Cache recovered — last complete block: {last_good}");
     }
-    let mut cache_file = shield_cache::open_cache(cache_path)
+    let mut cache_file = shield_cache::open_cache(&cache_path)
         .expect("failed to open shield.bin");
 
     if scan_from <= chain_height {
@@ -248,7 +264,7 @@ async fn main() {
                 }
                 index.last_scanned = chain_height;
 
-                if let Err(e) = index.save(&config.index_path) {
+                if let Err(e) = index.save(&index_path) {
                     eprintln!("\n  Warning: failed to save index: {e}");
                 }
 
@@ -267,7 +283,7 @@ async fn main() {
     }
 
     // Load entire shield.bin into memory for zero-disk-I/O serving
-    let shield_buffer = std::fs::read(cache_path).unwrap_or_default();
+    let shield_buffer = std::fs::read(&cache_path).unwrap_or_default();
     let buffer_mb = shield_buffer.len() as f64 / (1024.0 * 1024.0);
     println!("  Shield buffer: {buffer_mb:.1} MB in memory");
 
@@ -275,7 +291,7 @@ async fn main() {
     let state = Arc::new(AppState {
         rpc,
         index: RwLock::new(index),
-        index_path: config.index_path.clone(),
+        index_path: index_path.clone(),
         hash_cache: RwLock::new(api::HashCache::new(1000)),
         block_cache,
         chain_height: AtomicU32::new(chain_height),
@@ -293,14 +309,18 @@ async fn main() {
         .route("/params/{filename}", get(api::serve_sapling_params))
         .with_state(state.clone());
 
-    // ZMQ listener — instant block notifications when it works
+    // ZMQ listener — the fast path. When the node publishes a hashblock we
+    // catch up instantly. Not the only indexing path, though: the polling
+    // loop below always runs as a safety net, because ZMQ can silently stall
+    // (socket stays open but the node stops servicing subscribers) and we'd
+    // have no way to tell from here.
     {
         let s = state.clone();
         let zmq_url = config.zmq_url.clone();
         let rpc_url = config.rpc_url.clone();
         let rpc_user = config.rpc_user.clone();
         let rpc_pass = config.rpc_pass.clone();
-        let index_path = config.index_path.clone();
+        let index_path_z = index_path.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
             loop {
@@ -308,12 +328,12 @@ async fn main() {
                 let mut subscriber = match bitcoincore_zmq::subscribe_async(&[&zmq_url]) {
                     Ok(sub) => {
                         s.zmq_active.store(true, std::sync::atomic::Ordering::Relaxed);
-                        eprintln!("  [zmq] Connected — polling disabled");
+                        eprintln!("  [zmq] Connected");
                         sub
                     }
                     Err(e) => {
                         s.zmq_active.store(false, std::sync::atomic::Ordering::Relaxed);
-                        eprintln!("  [zmq] Failed: {e} — polling re-enabled, retrying in 30s");
+                        eprintln!("  [zmq] Failed: {e} — retrying in 30s (polling continues)");
                         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                         continue;
                     }
@@ -324,7 +344,7 @@ async fn main() {
                         Ok(m) => m,
                         Err(e) => {
                             s.zmq_active.store(false, std::sync::atomic::Ordering::Relaxed);
-                        eprintln!("  [zmq] Error: {e} — polling re-enabled, reconnecting");
+                            eprintln!("  [zmq] Error: {e} — reconnecting (polling continues)");
                             break;
                         }
                     };
@@ -336,7 +356,7 @@ async fn main() {
                     let r = rpc_url.clone();
                     let u = rpc_user.clone();
                     let p = rpc_pass.clone();
-                    let i = index_path.clone();
+                    let i = index_path_z.clone();
                     tokio::task::spawn_blocking(move || {
                         index_new_blocks(&r, &u, &p, &s2, &i, "ZMQ");
                     }).await.ok();
@@ -347,41 +367,30 @@ async fn main() {
         });
     }
 
-    // Polling loop — always runs, catches anything ZMQ misses
+    // Polling loop — unconditional 30s safety net.
+    //
+    // Runs regardless of `zmq_active`. If ZMQ is healthy this mostly no-ops
+    // (a single getblockcount RPC to the local node, and `index_new_blocks`
+    // early-exits when `scan_from > chain_height`, plus `shield_heights`
+    // dedupes against any block ZMQ already indexed). If ZMQ silently stalls
+    // the way the Dash/PIVX-family publisher tends to, this picks up every
+    // missed block within ≤30s — which is the whole point.
     {
         let s = state.clone();
         let rpc_url = config.rpc_url.clone();
         let rpc_user = config.rpc_user.clone();
         let rpc_pass = config.rpc_pass.clone();
-        let index_path = config.index_path.clone();
+        let index_path_p = index_path.clone();
         tokio::spawn(async move {
-            eprintln!("  [poll] Standby (10s interval, active when ZMQ is down)");
+            eprintln!("  [poll] Safety net — 30s interval, always on");
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-                if s.zmq_active.load(std::sync::atomic::Ordering::Relaxed) {
-                    continue;
-                }
-
-                // Quick check: does last scanned block have a nextblockhash?
-                let last_scanned = s.index.read().await.last_scanned;
-                let rpc = RpcClient::new(&rpc_url, &rpc_user, &rpc_pass);
-                let has_next = match rpc.get_block_hash(last_scanned) {
-                    Ok(hash) => match rpc.get_block(&hash, 1) {
-                        Ok(json) => json.get("nextblockhash").is_some(),
-                        Err(_) => false,
-                    },
-                    Err(_) => false,
-                };
-                if !has_next {
-                    continue;
-                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
                 let s2 = s.clone();
                 let r = rpc_url.clone();
                 let u = rpc_user.clone();
                 let p = rpc_pass.clone();
-                let i = index_path.clone();
+                let i = index_path_p.clone();
                 tokio::task::spawn_blocking(move || {
                     index_new_blocks(&r, &u, &p, &s2, &i, "Poll");
                 }).await.ok();

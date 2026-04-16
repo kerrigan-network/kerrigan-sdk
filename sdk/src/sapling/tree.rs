@@ -7,7 +7,7 @@ use std::io::Cursor;
 use incrementalmerkletree::frontier::CommitmentTree;
 use incrementalmerkletree::witness::IncrementalWitness;
 use sapling::Node;
-use pivx_primitives::merkle_tree::{
+use zcash_primitives::merkle_tree::{
     read_commitment_tree, read_incremental_witness, write_commitment_tree,
     write_incremental_witness,
 };
@@ -65,12 +65,11 @@ pub fn tree_root_hex(tree: &SaplingTree) -> String {
 ///
 /// Returns the witness, or `None` if the tree is empty.
 pub fn witness_from_tree(tree: &SaplingTree) -> Option<SaplingWitness> {
-    // incrementalmerkletree 0.7: from_tree returns directly (not Option).
-    // It panics on empty tree, so we guard with size check.
     if tree.size() == 0 {
         None
     } else {
-        Some(SaplingWitness::from_tree(tree.clone()))
+        // incrementalmerkletree 0.8: from_tree returns Option<IncrementalWitness>
+        SaplingWitness::from_tree(tree.clone())
     }
 }
 

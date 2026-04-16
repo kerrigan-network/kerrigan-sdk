@@ -1,6 +1,6 @@
 [package]
 name = "kerrigan-sdk"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Kerrigan Network SDK — pure-Rust wallet primitives with Sapling shield support"
 license = "MIT"
@@ -28,16 +28,21 @@ zeroize = { version = "1.8", features = ["derive"] }
 # Entropy
 getrandom = { version = "0.2", features = ["js"] }
 
-# Sapling shielded transactions (librustpivx — PIVX fork of zcash libs)
-sapling = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase" }
-pivx_primitives = { package = "zcash_primitives", git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", default-features = false, features = ["transparent-inputs", "circuits", "std", "non-standard-fees"] }
-pivx_protocol = { package = "zcash_protocol", git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", default-features = false }
-zcash_keys = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", features = ["unstable", "sapling"] }
-zcash_transparent = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase" }
-bellman = { git = "https://github.com/Duddino/librustpivx", branch = "librustzcash-rebase", features = ["groth16"] }
+# Sapling shielded transactions — upstream crates matching Kerrigan node FFI
+sapling = { package = "sapling-crypto", version = "0.5", features = ["temporary-zcashd", "circuit", "std"], default-features = false }
+zcash_primitives = { version = "0.26", features = ["temporary-zcashd", "std"], default-features = false }
+zcash_protocol = { version = "0.7", features = ["local-consensus"] }
+# zcash_proofs not included — requires filesystem (home crate), incompatible with WASM
 zcash_note_encryption = "0.4"
-incrementalmerkletree = "0.7"
+bellman = { version = "0.14", default-features = false, features = ["groth16"] }
+incrementalmerkletree = "0.8"
+zcash_keys = { version = "0.7", features = ["sapling"] }
 rand_core = { version = "0.6", features = ["std"] }
 jubjub = "0.10"
-wasm-bindgen = "0.2"
+wasm-bindgen = "=0.2.100"
 serde-wasm-bindgen = "0.6"
+wasm-bindgen-rayon = { version = "1.2", optional = true }
+
+[features]
+default = []
+multicore = ["wasm-bindgen-rayon"]

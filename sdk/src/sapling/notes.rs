@@ -12,8 +12,8 @@ use sapling::zip32::ExtendedFullViewingKey;
 use sapling::{Node, Note, NullifierDerivingKey};
 use serde::{Deserialize, Serialize};
 use zcash_note_encryption::try_note_decryption;
-use pivx_primitives::consensus::BranchId;
-use pivx_primitives::transaction::Transaction;
+use zcash_primitives::consensus::BranchId;
+use zcash_primitives::transaction::Transaction;
 
 use crate::encoding;
 use super::keys;

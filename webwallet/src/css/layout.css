@@ -1,0 +1,190 @@
+/* Kerrigan Wallet — Layout & Navigation */
+
+#app {
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Wallet container — centered, max-width for desktop */
+.wallet-shell {
+  width: 100%;
+  max-width: var(--wallet-max-width);
+  margin: 0 auto;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Main content area (above nav) */
+.wallet-content {
+  flex: 1;
+  padding: var(--space-lg) var(--space-md);
+  padding-bottom: calc(var(--nav-height) + var(--space-lg));
+  overflow-y: auto;
+}
+
+/* Full-screen views (welcome, login) — no nav */
+.view-fullscreen {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xl) var(--space-lg);
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Bottom navigation bar */
+.nav-bar {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: var(--wallet-max-width);
+  height: var(--nav-height);
+  background: rgba(11, 11, 20, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 0 var(--space-md);
+  z-index: 100;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  transition: color var(--duration-fast) var(--ease-out);
+  position: relative;
+}
+
+.nav-item.active {
+  color: var(--purple-light);
+}
+
+.nav-item:hover {
+  color: var(--text-secondary);
+}
+
+.nav-item.active::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 24px;
+  height: 2px;
+  background: var(--purple);
+  border-radius: var(--radius-full);
+}
+
+.nav-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.nav-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* View transitions */
+.view-enter {
+  animation: slideUp var(--duration-slow) var(--ease-out) both;
+}
+
+/* App header / logo bar */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) 0;
+  margin-bottom: var(--space-md);
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-logo img {
+  width: 32px;
+  height: 32px;
+  filter: drop-shadow(0 0 6px rgba(124, 58, 237, 0.35));
+}
+
+.app-logo-text {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: var(--text-bright);
+  text-transform: uppercase;
+}
+
+.app-logo-sub {
+  font-family: var(--font-brand);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--purple-light);
+  text-transform: uppercase;
+  margin-top: -2px;
+}
+
+/* Section spacing */
+.section {
+  margin-bottom: var(--space-xl);
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-md);
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Desktop: subtle side glow for ambiance */
+@media (min-width: 600px) {
+  .wallet-shell::before,
+  .wallet-shell::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    width: 200px;
+    height: 100%;
+    pointer-events: none;
+    z-index: -1;
+  }
+  .wallet-shell::before {
+    left: 0;
+    background: radial-gradient(ellipse at left center, rgba(124, 58, 237, 0.03) 0%, transparent 70%);
+  }
+  .wallet-shell::after {
+    right: 0;
+    background: radial-gradient(ellipse at right center, rgba(124, 58, 237, 0.03) 0%, transparent 70%);
+  }
+}

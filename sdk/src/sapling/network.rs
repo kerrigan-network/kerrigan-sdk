@@ -3,7 +3,7 @@
 /// Implements the zcash consensus traits so all upstream crate code
 /// (key derivation, encoding, transaction building) works with Kerrigan's
 /// Sapling activation height, address HRP, and transparent prefixes.
-use pivx_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters};
+use zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters};
 
 // ---------------------------------------------------------------------------
 // Network definition

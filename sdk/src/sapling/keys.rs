@@ -8,7 +8,7 @@ use sapling::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
 use sapling::PaymentAddress;
 use zcash_keys::encoding;
 use zcash_keys::keys::sapling as sapling_keys;
-use pivx_primitives::zip32::AccountId;
+use zcash_primitives::zip32::AccountId;
 
 use super::network;
 use crate::params;

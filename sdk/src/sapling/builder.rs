@@ -81,7 +81,7 @@ pub fn build_shield(
     );
 
     sapling_builder
-        .add_output(None, *to_shielded, NoteValue::from_raw(amount), memo)
+        .add_output(None, *to_shielded, NoteValue::from_raw(amount), memo.unwrap_or([0u8; 512]))
         .map_err(|e| SaplingBuilderError::Build(format!("add output: {e:?}")))?;
 
     let dummy_extsk = keys::default_spending_key(&[0u8; 64])
@@ -136,7 +136,7 @@ pub fn build_sapling_send(
     #[allow(deprecated)]
     let dfvk = extsk.to_diversifiable_full_viewing_key();
     let fvk = dfvk.fvk().clone();
-    let nk = dfvk.to_nk(pivx_primitives::zip32::Scope::External);
+    let nk = dfvk.to_nk(zcash_primitives::zip32::Scope::External);
 
     // Get anchor from first note's witness
     let anchor = Anchor::from_bytes(notes[0].witness.root().to_bytes())
@@ -181,7 +181,7 @@ pub fn build_sapling_send(
 
     // Add payment output
     sapling_builder
-        .add_output(None, *to, NoteValue::from_raw(amount), memo)
+        .add_output(None, *to, NoteValue::from_raw(amount), memo.unwrap_or([0u8; 512]))
         .map_err(|e| SaplingBuilderError::Build(format!("add output: {e:?}")))?;
 
     // Add change output (back to ourselves)
@@ -189,7 +189,7 @@ pub fn build_sapling_send(
     if change > 0 {
         let (_, change_addr) = dfvk.default_address();
         sapling_builder
-            .add_output(None, change_addr, NoteValue::from_raw(change), None)
+            .add_output(None, change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| SaplingBuilderError::Build(format!("add change: {e:?}")))?;
     }
 
@@ -222,7 +222,7 @@ pub fn build_unshield(
     #[allow(deprecated)]
     let dfvk = extsk.to_diversifiable_full_viewing_key();
     let fvk = dfvk.fvk().clone();
-    let nk = dfvk.to_nk(pivx_primitives::zip32::Scope::External);
+    let nk = dfvk.to_nk(zcash_primitives::zip32::Scope::External);
 
     let anchor = Anchor::from_bytes(notes[0].witness.root().to_bytes())
         .into_option()
@@ -269,7 +269,7 @@ pub fn build_unshield(
     if change > 0 {
         let (_, change_addr) = dfvk.default_address();
         sapling_builder
-            .add_output(None, change_addr, NoteValue::from_raw(change), None)
+            .add_output(None, change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| SaplingBuilderError::Build(format!("add change: {e:?}")))?;
     }
 
