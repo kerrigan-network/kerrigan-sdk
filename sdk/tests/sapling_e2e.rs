@@ -797,7 +797,7 @@ fn note_decryption_positive_path() {
         Anchor::empty_tree(),
     );
 
-    builder.add_output(None, addr, NoteValue::from_raw(50_000_000), None).unwrap();
+    builder.add_output(None, addr, NoteValue::from_raw(50_000_000), [0u8; 512]).unwrap();
     // We can't generate real proofs without ~50MB params, but we CAN test
     // that the builder accepts our address and value.
     // For full decryption testing, we'd need the params — skip for now.
