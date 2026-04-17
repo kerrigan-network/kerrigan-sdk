@@ -44,6 +44,12 @@ pub struct AppState {
     pub chain_height: AtomicU32,
     /// True when ZMQ is connected and receiving blocks. Polling is disabled.
     pub zmq_active: std::sync::atomic::AtomicBool,
+    /// Set while `index_new_blocks` is running. ZMQ and polling can both
+    /// fire simultaneously; without this gate they race on the "filter then
+    /// append" critical section and can double-write the same block into
+    /// `shield.bin`. The loser of the race just returns early — the work
+    /// is redundant anyway, and the winner will pick up the same tip.
+    pub indexing: std::sync::atomic::AtomicBool,
     /// Persistent shield.bin cache file handle.
     pub cache_file: tokio::sync::Mutex<std::fs::File>,
     /// In-memory shield buffer — the entire shield.bin held in RAM.

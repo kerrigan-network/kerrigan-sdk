@@ -40,6 +40,29 @@ fn index_new_blocks(
     index_path: &str,
     source: &str,
 ) {
+    // Mutual-exclusion gate: ZMQ and poll can both fire at the same tip,
+    // and the filter-then-append critical section below is not atomic. Without
+    // this, the loser of the race would double-append the same blocks into
+    // shield.bin. If someone else is already indexing, just return — the
+    // winner will cover whatever we would have done.
+    if state.indexing.compare_exchange(
+        false,
+        true,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    ).is_err() {
+        return;
+    }
+    // RAII guard so the flag is released on every exit path (including
+    // panics and early returns).
+    struct IndexingGuard<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for IndexingGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = IndexingGuard(&state.indexing);
+
     let rpc = RpcClient::new(rpc_url, rpc_user, rpc_pass);
     let chain_height = match rpc.get_block_count() {
         Ok(h) => h,
@@ -296,6 +319,7 @@ async fn main() {
         block_cache,
         chain_height: AtomicU32::new(chain_height),
         zmq_active: std::sync::atomic::AtomicBool::new(false),
+        indexing: std::sync::atomic::AtomicBool::new(false),
         cache_file: tokio::sync::Mutex::new(cache_file),
         shield_buffer: RwLock::new(shield_buffer),
     });
