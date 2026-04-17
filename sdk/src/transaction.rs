@@ -342,7 +342,7 @@ pub fn select_utxos(
 
     // Sort by amount descending (largest first)
     let mut sorted: Vec<Utxo> = utxos.to_vec();
-    sorted.sort_by(|a, b| b.amount.cmp(&a.amount));
+    sorted.sort_by_key(|u| std::cmp::Reverse(u.amount));
 
     let mut selected = Vec::new();
     let mut total: u64 = 0;
