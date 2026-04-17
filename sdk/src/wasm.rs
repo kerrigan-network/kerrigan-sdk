@@ -163,9 +163,15 @@ pub fn validate_address(address: &str) -> bool {
 
 /// Build and sign a transparent transaction.
 ///
+/// The caller is responsible for computing the send amount and any change
+/// expectations. Pass a literal amount in satoshis — this function does not
+/// interpret any special sentinel values. To send the full balance, compute
+/// `sum(utxos) - estimate_transparent_fee(utxos.len(), 1)` on the caller side
+/// and pass the result.
+///
 /// - `utxos`: JsValue array of { txid, vout, amount, script_pubkey }
 /// - `to_address`: destination address (K... or 7...)
-/// - `amount`: amount in satoshis (0 = send max)
+/// - `amount`: amount in satoshis (literal, > 0)
 /// - `seed`: wallet seed bytes
 /// - `account`: BIP44 account index
 /// - `index`: BIP44 address index
@@ -187,18 +193,9 @@ pub fn build_transparent_tx(
     let kp = crate::keys::derive_keypair_at(seed, account, index)
         .map_err(|e| JsError::new(&e.to_string()))?;
 
-    let result = if amount == 0 {
-        // Send max
-        let own_script = crate::script::address_to_script_pubkey(&kp.address)
-            .map_err(|e| JsError::new(&e.to_string()))?;
-        crate::transaction::build_max_transaction(
-            &utxos, to_address, &kp.privkey, &kp.pubkey, &own_script,
-        ).map_err(|e| JsError::new(&e.to_string()))?
-    } else {
-        crate::transaction::build_transaction(
-            &utxos, to_address, amount, &kp.privkey, &kp.pubkey, &kp.address,
-        ).map_err(|e| JsError::new(&e.to_string()))?
-    };
+    let result = crate::transaction::build_transaction(
+        &utxos, to_address, amount, &kp.privkey, &kp.pubkey, &kp.address,
+    ).map_err(|e| JsError::new(&e.to_string()))?;
 
     let spent: Vec<(String, u32)> = result.spent_utxos;
     Ok(serde_json::json!({
@@ -233,6 +230,17 @@ pub fn estimate_shield_send_fee(num_spends: usize) -> u64 {
 #[wasm_bindgen]
 pub fn estimate_unshield_fee(num_spends: usize) -> u64 {
     crate::sapling::fees::unshield_fee(num_spends)
+}
+
+/// Estimate a Sapling transaction fee for an arbitrary (spends, outputs) shape.
+///
+/// Useful when building send-max transactions where the output count differs
+/// from the typical helper functions above (e.g. sapling-send max has no
+/// change output, so pass `num_outputs = 1`; unshield-max has no sapling
+/// change, so pass `num_outputs = 0`).
+#[wasm_bindgen]
+pub fn estimate_sapling_fee(num_spends: usize, num_outputs: usize) -> u64 {
+    crate::sapling::fees::sapling_fee(num_spends, num_outputs)
 }
 
 /// Load Sapling proving parameters into memory (with SHA-256 verification).
@@ -302,8 +310,10 @@ pub fn build_shield_tx(
 
     // Compute txid from raw tx hex (double SHA-256, reversed)
     let txid = compute_txid_from_hex(&result.tx_hex);
+    let spent: Vec<(String, u32)> = result.spent_utxos;
     Ok(serde_json::json!({
-        "tx_hex": result.tx_hex, "fee": result.fee, "amount": result.amount, "txid": txid,
+        "tx_hex": result.tx_hex, "fee": result.fee, "amount": result.amount,
+        "txid": txid, "spent_utxos": spent,
     }).to_string())
 }
 

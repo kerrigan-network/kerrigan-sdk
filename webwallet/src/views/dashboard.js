@@ -2,11 +2,11 @@
 
 import { openModal, navigate } from '../router.js';
 import { prefill as prefillSend } from './send.js';
+import { setMemo } from './memo.js';
 import { store, subscribe, formatKRGN, formatKRGNShort, totalBalance } from '../state.js';
 import { icon } from '../components/icons.js';
-import { startShieldSync, scheduleShieldSync, refreshTransparentBalance, refreshTransparentHistory, loadPersistedState } from '../sync.js';
-import { showToast } from '../components/toast.js';
-import { appHeader } from '../templates.js';
+import { startShieldSync, scheduleShieldSync, refreshTransparentBalance, refreshTransparentHistory, refreshPendingTxs, loadPersistedState } from '../sync.js';
+import { appHeader, escapeHtml, classifyTx } from '../templates.js';
 import * as net from '../network.js';
 
 let unsubs = [];
@@ -35,13 +35,16 @@ export function render() {
       // Action buttons
       document.getElementById('btn-send')?.addEventListener('click', () => openModal('send'));
       document.getElementById('btn-receive')?.addEventListener('click', () => openModal('receive'));
-      document.getElementById('shield-nudge')?.addEventListener('click', () => {
+      document.getElementById('shield-nudge-container')?.addEventListener('click', () => {
+        if (Number(store.balance.transparent) <= 0) return;
         prefillSend(store.wallet.shieldedAddr, true);
         openModal('send');
       });
 
       // Nav
       mountNav();
+      wireViewAllButton();
+      wireMemoClicks();
 
       // Load persisted state (balance + history) + kick initial render
       loadPersistedState().then(() => {
@@ -77,6 +80,7 @@ function initElectrumX() {
     // Already connected (e.g. after resync) — just refresh immediately
     refreshTransparentBalance();
     refreshTransparentHistory();
+    refreshPendingTxs();
     return;
   }
   net.connectElectrumX({
@@ -84,10 +88,14 @@ function initElectrumX() {
       store.sync.electrumConnected = true;
       refreshTransparentBalance();
       refreshTransparentHistory();
+      refreshPendingTxs();
       net.subscribeHeaders(() => {
         refreshTransparentBalance();
         refreshTransparentHistory();
-        scheduleShieldSync(5000); // give bridge 5s to index the new block
+        refreshPendingTxs();
+        // Try shield sync at 3s (optimistic) and 10s (safe fallback)
+        scheduleShieldSync(3000);
+        scheduleShieldSync(10000);
       });
     },
     onDisconnect: () => {
@@ -178,13 +186,8 @@ function renderShieldNudge() {
 function updateShieldNudge() {
   const container = document.getElementById('shield-nudge-container');
   if (!container) return;
-  const html = renderShieldNudge();
-  container.innerHTML = html;
-  // Re-bind click handler
-  document.getElementById('shield-nudge')?.addEventListener('click', () => {
-    prefillSend(store.wallet.shieldedAddr, true);
-    openModal('send');
-  });
+  container.innerHTML = renderShieldNudge();
+  // Click handler is on container (event delegation), no re-bind needed
 }
 
 // ── Sync Bar ──
@@ -245,7 +248,7 @@ function renderRecentTxs() {
   const txs = store.history.slice(-5).reverse();
   if (txs.length === 0) {
     return `
-      <div class="section">
+      <div id="recent-activity-section" class="section">
         <div class="section-header">
           <span class="section-title">Recent Activity</span>
         </div>
@@ -259,12 +262,10 @@ function renderRecentTxs() {
 
   const rows = txs.map(tx => renderTxRow(tx)).join('');
   return `
-    <div class="section">
+    <div id="recent-activity-section" class="section">
       <div class="section-header">
         <span class="section-title">Recent Activity</span>
-        <button class="btn btn-ghost" style="font-size: 13px;" onclick="document.querySelector('[data-nav=activity]')?.click()">
-          View All
-        </button>
+        <button id="btn-view-all-activity" class="btn btn-ghost" style="font-size: 13px;">View All</button>
       </div>
       <div class="card" style="padding: var(--space-sm) var(--space-md);">
         ${rows}
@@ -274,37 +275,41 @@ function renderRecentTxs() {
 }
 
 function updateRecentTxs() {
-  // Find and replace the recent activity section
-  const sections = document.querySelectorAll('.section');
-  const activitySection = sections[sections.length - 1];
-  if (activitySection) {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = renderRecentTxs();
-    activitySection.replaceWith(tmp.firstElementChild);
-  }
+  const el = document.getElementById('recent-activity-section');
+  if (!el) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderRecentTxs();
+  el.replaceWith(tmp.firstElementChild);
+  wireViewAllButton();
+  wireMemoClicks();
+}
+
+function wireViewAllButton() {
+  document.getElementById('btn-view-all-activity')?.addEventListener('click', () => {
+    document.querySelector('[data-nav=activity]')?.click();
+  });
+}
+
+/**
+ * Bind click handlers on every memo preview in the current recent-activity
+ * markup. Called on mount and after every re-render of that section — the
+ * section's innerHTML is swapped wholesale (via replaceWith), so listeners
+ * attached last render are gone and we always re-attach.
+ */
+function wireMemoClicks() {
+  document.querySelectorAll('#recent-activity-section .tx-memo-click').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const text = el.dataset.memo;
+      if (!text) return;
+      setMemo(text);
+      openModal('memo');
+    });
+  });
 }
 
 function renderTxRow(tx) {
-  const isReceive = tx.type === 'received';
-  const isSend = tx.type === 'sent';
-  const isSelf = tx.type === 'self';
-  const isShield = tx.type === 'shield';
-  const isUnshield = tx.type === 'unshield';
-  const isShielded = tx.pool === 'shielded';
-
-  const iconName = isShield ? 'shieldFilled' : isUnshield ? 'unlock' :
-                   isShielded ? 'shieldFilled' : isSelf ? 'refresh' :
-                   (isReceive ? 'receive' : 'send');
-  const iconClass = (isShield || isShielded) ? 'shielded' : isSelf ? 'sent' :
-                    (isReceive ? 'received' : 'sent');
-  const label = isShield ? 'Shielded' : isUnshield ? 'Unshielded' :
-                isSelf ? 'Self Transfer' :
-                isShielded ? (isReceive ? 'Shielded Receive' : 'Shielded Send') :
-                (isReceive ? 'Received' : isSend ? 'Sent' : 'Transaction');
-  const amountStr = (isShield || isUnshield) ? formatKRGN(tx.amount) :
-                    isSelf ? `-${formatKRGN(tx.amount)}` :
-                    isReceive ? `+${formatKRGN(tx.amount)}` : `-${formatKRGN(tx.amount)}`;
-  const amountClass = isReceive ? 'positive' : (isShield || isUnshield) ? '' : 'negative';
+  const { isShielded, iconName, iconClass, label, amountStr, amountClass } = classifyTx(tx, formatKRGN);
 
   return `
     <div class="tx-row">
@@ -317,12 +322,12 @@ function renderTxRow(tx) {
           ${isShielded ? '<span class="badge badge-shielded" style="font-size: 10px; padding: 1px 6px;">Shielded</span>' : ''}
         </div>
         <div class="tx-meta">
-          ${tx.memo ? `<span>"${tx.memo.slice(0, 30)}"</span>` : ''}
+          ${tx.memo ? `<span class="tx-memo-click" data-memo="${escapeHtml(tx.memo)}">"${escapeHtml(tx.memo.slice(0, 30))}"</span>` : ''}
           ${tx.confirmations > 0 ? `<span>${tx.confirmations} conf</span>` : '<span class="text-yellow">Pending</span>'}
         </div>
       </div>
       <div class="tx-amount">
-        <div class="tx-amount-value ${amountClass}">${tx.amount > 0 ? amountStr : ''}</div>
+        <div class="tx-amount-value ${amountClass}">${amountStr}</div>
       </div>
     </div>
   `;

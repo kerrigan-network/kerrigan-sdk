@@ -90,6 +90,16 @@ function openSocket() {
   };
 
   ws.onclose = () => {
+    // Drop subscription callbacks on disconnect. Caller's `onConnect` will
+    // re-register them on the new socket; without this, each reconnect
+    // stacks a fresh anonymous callback onto the Set and every new block
+    // fires N duplicate refreshes.
+    subscriptions.clear();
+    // Reject outstanding requests so callers don't hang forever.
+    for (const { reject } of pending.values()) {
+      reject(new Error('ElectrumX connection closed'));
+    }
+    pending.clear();
     onDisconnected?.();
     scheduleReconnect();
   };

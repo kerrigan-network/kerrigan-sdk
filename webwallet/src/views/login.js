@@ -6,7 +6,6 @@ import * as sdk from '../sdk.js';
 import * as cryptoUtil from '../crypto.js';
 import * as storage from '../storage.js';
 import { icon } from '../components/icons.js';
-import { showToast } from '../components/toast.js';
 import * as T from '../templates.js';
 
 export function render() {

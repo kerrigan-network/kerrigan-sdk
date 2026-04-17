@@ -1,6 +1,6 @@
 /** AES-256-GCM encryption for seed storage using Web Crypto API + PBKDF2. */
 
-const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_ITERATIONS = 750_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
@@ -18,9 +18,7 @@ async function deriveKey(passphrase, salt) {
   );
 }
 
-/**
- * Encrypt data with passphrase. Returns { salt, iv, ciphertext } as base64 strings.
- */
+/** Encrypt data with passphrase. Returns { salt, iv, ciphertext } as base64 strings. */
 export async function encrypt(data, passphrase) {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
@@ -37,9 +35,7 @@ export async function encrypt(data, passphrase) {
   };
 }
 
-/**
- * Decrypt data with passphrase. Returns Uint8Array.
- */
+/** Decrypt data with passphrase. Returns Uint8Array. */
 export async function decrypt({ salt, iv, ciphertext }, passphrase) {
   const saltBytes = Uint8Array.from(atob(salt), c => c.charCodeAt(0));
   const ivBytes = Uint8Array.from(atob(iv), c => c.charCodeAt(0));

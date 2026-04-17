@@ -110,13 +110,10 @@ export function validateAddress(address) {
 
 /**
  * Build and sign a transparent transaction.
- * @param {Array} utxos - [{ txid, vout, amount, script_pubkey }]
- * @param {string} toAddress - destination address
- * @param {number} amount - satoshis (0 = send max)
- * @param {Uint8Array} seed - wallet seed
- * @param {number} account - BIP44 account
- * @param {number} index - BIP44 index
- * @returns {{ tx_hex, txid, fee, spent_utxos }}
+ *
+ * The SDK takes a literal amount — no sentinel values. For send-max,
+ * compute `sum(utxos) - estimateTransparentFee(utxos.length, 1)` on the
+ * caller side and pass the result.
  */
 export function buildTransparentTx(utxos, toAddress, amount, seed, account = 0, index = 0) {
   return JSON.parse(wasm.build_transparent_tx(utxos, toAddress, BigInt(amount), seed, account, index));
@@ -142,16 +139,14 @@ export function estimateUnshieldFee(numSpends) {
   return Number(wasm.estimate_unshield_fee(numSpends));
 }
 
+/** Estimate Sapling fee for an arbitrary (spends, outputs) shape. */
+export function estimateSaplingFee(numSpends, numOutputs) {
+  return Number(wasm.estimate_sapling_fee(numSpends, numOutputs));
+}
+
 /**
- * Build a shielding transaction (transparent → sapling).
- * Requires Sapling proving params (output + spend).
- */
-/**
- * Build a shielding tx via Web Worker (non-blocking).
- */
-/**
- * Build a shielding tx via Web Worker (non-blocking).
- * Params must be loaded first via loadSaplingParamsInWorker().
+ * Build a shielding tx (transparent → sapling) via Web Worker.
+ * Worker lazily downloads, verifies, and caches Sapling params.
  */
 export async function buildShieldTx(utxos, toShieldedAddr, amount, memo, seed, account = 0, index = 0) {
   const { runInWorker } = await import('./worker-pool.js');

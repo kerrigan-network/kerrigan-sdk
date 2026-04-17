@@ -31,6 +31,9 @@ pub struct SaplingTxResult {
     pub nullifiers: Vec<String>,
     pub amount: u64,
     pub fee: u64,
+    /// Transparent UTXOs consumed as inputs. Populated only by the shield
+    /// path (transparent → sapling); empty for sapling-send and unshield.
+    pub spent_utxos: Vec<(String, u32)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +114,11 @@ pub fn build_shield(
         &selected, privkey, pubkey, from_address, change, &auth_bundle, &sighash,
     ).map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
 
-    Ok(SaplingTxResult { tx_hex, nullifiers: Vec::new(), amount, fee })
+    let spent_utxos: Vec<(String, u32)> = selected.iter()
+        .map(|u| (u.txid.clone(), u.vout))
+        .collect();
+
+    Ok(SaplingTxResult { tx_hex, nullifiers: Vec::new(), amount, fee, spent_utxos })
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +293,7 @@ pub fn build_unshield(
         to_transparent, amount, &auth_bundle, &sighash,
     ).map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
 
-    Ok(SaplingTxResult { tx_hex, nullifiers, amount, fee })
+    Ok(SaplingTxResult { tx_hex, nullifiers, amount, fee, spent_utxos: Vec::new() })
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +318,7 @@ fn build_and_sign_sapling_only(
         &auth_bundle, &sighash,
     ).map_err(|e| SaplingBuilderError::Build(format!("serialize: {e}")))?;
 
-    Ok(SaplingTxResult { tx_hex, nullifiers, amount, fee })
+    Ok(SaplingTxResult { tx_hex, nullifiers, amount, fee, spent_utxos: Vec::new() })
 }
 
 /// Core bundle builder: proofs → Kerrigan sighash → signatures.

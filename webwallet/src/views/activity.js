@@ -2,6 +2,9 @@
 
 import { store, subscribe, formatKRGN } from '../state.js';
 import { icon } from '../components/icons.js';
+import { escapeHtml, classifyTx } from '../templates.js';
+import { openModal } from '../router.js';
+import { setMemo } from './memo.js';
 import { renderNav, mountNav } from './dashboard.js';
 
 let unsubs = [];
@@ -25,9 +28,35 @@ export function render() {
     onMount: () => {
       mountNav();
       mountFilters();
+
+      // Event delegation on the list container (stable — its innerHTML gets
+      // replaced, but the element itself persists). One listener covers:
+      //   - Memo preview click → open memo modal (checked first; stops
+      //     propagation so it doesn't also trigger the tx-row's explorer)
+      //   - tx-row click → open the on-chain explorer for that txid
+      // data-memo and data-txid are both escaped on render to block XSS
+      // from hostile remote data (memos are attacker-controllable on
+      // incoming shielded txs).
+      const listEl = document.getElementById('activity-list');
+      listEl?.addEventListener('click', (e) => {
+        const memoEl = e.target.closest('.tx-memo-click');
+        if (memoEl) {
+          e.stopPropagation();
+          const text = memoEl.dataset.memo;
+          if (!text) return;
+          setMemo(text);
+          openModal('memo');
+          return;
+        }
+        const row = e.target.closest('[data-txid]');
+        const txid = row?.dataset.txid;
+        if (!txid || !/^[0-9a-f]{64}$/i.test(txid)) return;
+        window.open(`https://explorer.kerrigan.network/#/tx/${txid}`, '_blank', 'noopener');
+      });
+
       unsubs.push(subscribe('history', () => {
-        const listEl = document.getElementById('activity-list');
-        if (listEl) listEl.innerHTML = renderTxList(getFilteredHistory());
+        const el = document.getElementById('activity-list');
+        if (el) el.innerHTML = renderTxList(getFilteredHistory());
       }));
       return () => { unsubs.forEach(fn => fn()); unsubs = []; };
     },
@@ -80,38 +109,18 @@ function renderTxList(txs) {
 }
 
 function renderTxRow(tx) {
-  const isReceive = tx.type === 'received';
-  const isSelf = tx.type === 'self';
-  const isShield = tx.type === 'shield';
-  const isUnshield = tx.type === 'unshield';
-  const isShielded = tx.pool === 'shielded';
-  const iconName = isShield ? 'shieldFilled' : isUnshield ? 'unlock' :
-                   isShielded ? 'shieldFilled' : isSelf ? 'refresh' :
-                   (isReceive ? 'receive' : 'send');
-  const iconClass = (isShield || isShielded) ? 'shielded' : isSelf ? 'sent' :
-                    (isReceive ? 'received' : 'sent');
-
-  const label = isShield ? 'Shielded' : isUnshield ? 'Unshielded' :
-    isSelf ? 'Self Transfer'
-    : isShielded ? (isReceive ? 'Shielded Receive' : 'Shielded Send')
-    : (isReceive ? 'Received' : tx.type === 'sent' ? 'Sent' : 'Transaction');
-
-  const amountStr = tx.amount > 0
-    ? ((isShield || isUnshield) ? formatKRGN(tx.amount) :
-       isSelf ? `-${formatKRGN(tx.amount)} fee` :
-       isReceive ? `+${formatKRGN(tx.amount)}` : `-${formatKRGN(tx.amount)}`)
-    : '';
-  const amountClass = isReceive ? 'positive' : (isShield || isUnshield) ? '' : 'negative';
+  const { iconName, iconClass, label, amountStr, amountClass } = classifyTx(tx, formatKRGN);
 
   const time = tx.timestamp > 0
     ? new Date(tx.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : '';
 
-  const txidShort = tx.txid ? `${tx.txid.slice(0, 8)}...` : '';
-  const explorerUrl = tx.txid ? `https://explorer.kerrigan.network/#/tx/${tx.txid}` : '';
+  const memoSafe = tx.memo
+    ? escapeHtml(tx.memo.slice(0, 20)) + (tx.memo.length > 20 ? '...' : '')
+    : '';
 
   return `
-    <div class="tx-row" ${explorerUrl ? `style="cursor: pointer;" onclick="window.open('${explorerUrl}', '_blank')"` : ''}>
+    <div class="tx-row" ${tx.txid ? `data-txid="${escapeHtml(tx.txid)}" style="cursor: pointer;"` : ''}>
       <div class="tx-icon ${iconClass}">
         <span style="width: 18px; height: 18px; display: flex;">${icon(iconName)}</span>
       </div>
@@ -119,7 +128,7 @@ function renderTxRow(tx) {
         <div class="tx-type">${label}</div>
         <div class="tx-meta">
           ${time ? `<span>${time}</span>` : ''}
-          ${tx.memo ? `<span>"${tx.memo.slice(0, 20)}${tx.memo.length > 20 ? '...' : ''}"</span>` : ''}
+          ${tx.memo ? `<span class="tx-memo-click" data-memo="${escapeHtml(tx.memo)}">"${memoSafe}"</span>` : ''}
         </div>
       </div>
       <div class="tx-amount">

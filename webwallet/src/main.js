@@ -13,6 +13,7 @@ import * as send from './views/send.js';
 import * as receive from './views/receive.js';
 import * as activity from './views/activity.js';
 import * as settings from './views/settings.js';
+import * as memo from './views/memo.js';
 
 async function boot() {
   // Show loading state
@@ -39,6 +40,7 @@ async function boot() {
   registerView('settings', settings.render);
   registerView('modal:send', send.render);
   registerView('modal:receive', receive.render);
+  registerView('modal:memo', memo.render);
 
   // Check if wallet exists
   const hasWallet = await storage.hasWallet();
@@ -52,19 +54,19 @@ async function boot() {
 
 boot().catch(err => {
   console.error('Boot failed:', err);
-  document.getElementById('app').innerHTML = `
+  const app = document.getElementById('app');
+  app.innerHTML = `
     <div class="view-fullscreen gradient-mesh">
       <div style="text-align: center; max-width: 360px;">
         <h2 style="font-size: 20px; font-weight: 700; color: var(--red); margin-bottom: var(--space-md);">
           Failed to load wallet
         </h2>
-        <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: var(--space-lg);">
-          ${err.message}
-        </p>
-        <button onclick="location.reload()" class="btn btn-secondary">
-          Retry
-        </button>
+        <p id="boot-err-msg" style="font-size: 14px; color: var(--text-secondary); margin-bottom: var(--space-lg);"></p>
+        <button id="boot-retry" class="btn btn-secondary">Retry</button>
       </div>
     </div>
   `;
+  // Use textContent so an error string containing HTML can't inject markup.
+  document.getElementById('boot-err-msg').textContent = err?.message || String(err);
+  document.getElementById('boot-retry').addEventListener('click', () => location.reload());
 });

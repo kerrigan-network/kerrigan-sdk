@@ -39,6 +39,7 @@ export async function startShieldSync() {
     const data = await net.getShieldData(lastHeight + 1);
     if (data.length === 0) {
       store.sync.status = 'synced';
+      updateShieldBalance(notes);
       syncActive = false;
       return;
     }
@@ -120,10 +121,12 @@ function updateShieldBalance(notes) {
   store.balance.shielded = total;
 }
 
-/** Trigger a shield sync after a short delay (give bridge time to index). */
+/** Trigger a full refresh after a short delay (give bridge time to index). */
 export function scheduleShieldSync(delayMs = 5000) {
-  setTimeout(() => {
-    if (!syncActive) startShieldSync();
+  setTimeout(async () => {
+    if (!syncActive) await startShieldSync();
+    // Always refresh balances from persisted state after sync
+    await loadPersistedState();
   }, delayMs);
 }
 
@@ -167,6 +170,36 @@ export async function loadPersistedState() {
   if (shieldState?.notes && Array.isArray(shieldState.notes)) {
     store.balance.shielded = shieldState.notes.reduce((sum, n) => sum + (n.value || 0), 0);
   }
+}
+
+/**
+ * Refresh confirmations for any pending (confs=0) history entries.
+ *
+ * Works for ALL tx types regardless of destination — queries each txid
+ * directly via `blockchain.transaction.get` instead of relying on the
+ * user's transparent-address history. Fixes the case where unshield /
+ * sapling-send to a non-self address would stay "Pending" forever.
+ */
+export async function refreshPendingTxs() {
+  const pending = store.history.filter(h => h.confirmations === 0);
+  if (pending.length === 0) return;
+
+  let changed = false;
+  for (const tx of pending) {
+    if (!tx.txid) continue;
+    try {
+      const txData = await net.electrumRequest('blockchain.transaction.get', [tx.txid, true]);
+      const confs = Number(txData?.confirmations) || 0;
+      if (confs > 0) {
+        tx.confirmations = confs;
+        changed = true;
+      }
+    } catch {
+      // Tx not yet known to the node/ElectrumX — leave pending, try next block.
+    }
+  }
+
+  if (changed) await saveHistory();
 }
 
 /** Persist current history to IndexedDB. */

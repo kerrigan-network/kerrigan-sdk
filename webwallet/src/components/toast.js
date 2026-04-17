@@ -1,10 +1,17 @@
 /** Toast notification system. */
 
+import { escapeHtml } from '../templates.js';
+
 let toastTimeout = null;
 
 export function showToast(message, type = 'info', duration = 3000) {
   const root = document.getElementById('toast-root');
   clearTimeout(toastTimeout);
+
+  // `message` often comes from error paths (e.g. `err.message` where the
+  // error originated from the bridge, ElectrumX, or decoded on-chain data),
+  // so escape before interpolation to keep this out of the XSS blast radius.
+  const safeMessage = escapeHtml(message);
 
   const colors = {
     info: 'var(--purple)',
@@ -43,7 +50,7 @@ export function showToast(message, type = 'info', duration = 3000) {
       cursor: pointer;
     ">
       <span style="color: ${colors[type]}; display: flex;">${icons[type]}</span>
-      <span style="flex: 1;">${message}</span>
+      <span style="flex: 1;">${safeMessage}</span>
       <span class="toast-copy" style="display: flex; opacity: 0.4; margin-left: 4px; transition: opacity 150ms, color 150ms;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></span>
     </div>
   `;

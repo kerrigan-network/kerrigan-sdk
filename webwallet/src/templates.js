@@ -2,6 +2,21 @@
 
 import { icon } from './components/icons.js';
 
+/**
+ * Escape untrusted text for safe interpolation into an HTML string.
+ *
+ * Use whenever rendering data that could have come from outside the wallet:
+ * Sapling memos, tx IDs, addresses entered by third parties, error messages
+ * surfaced from the bridge/ElectrumX, etc. Never interpolate such values
+ * into innerHTML without running them through this first.
+ */
+export function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 // ── App header ──
 
 export function appHeader(rightContent = '') {
@@ -194,4 +209,39 @@ export function detailRow(label, value, { mono = false } = {}) {
 
 export function divider() {
   return '<div class="divider" style="margin: 0;"></div>';
+}
+
+// ── Tx classification ──
+
+/**
+ * Classify a history entry into the pieces both the dashboard and activity
+ * views need — icon, label, amount string, CSS class. Returns unformatted
+ * strings; the caller wraps them in whatever markup is appropriate. Keeping
+ * this single-sourced prevents the dashboard and activity views drifting.
+ */
+export function classifyTx(tx, formatKRGN) {
+  const isReceive = tx.type === 'received';
+  const isSend = tx.type === 'sent';
+  const isSelf = tx.type === 'self';
+  const isShield = tx.type === 'shield';
+  const isUnshield = tx.type === 'unshield';
+  const isShielded = tx.pool === 'shielded';
+
+  const iconName = isShield ? 'shieldFilled' : isUnshield ? 'unlock' :
+                   isShielded ? 'shieldFilled' : isSelf ? 'refresh' :
+                   (isReceive ? 'receive' : 'send');
+  const iconClass = (isShield || isShielded) ? 'shielded' : isSelf ? 'sent' :
+                    (isReceive ? 'received' : 'sent');
+  const label = isShield ? 'Shielded' : isUnshield ? 'Unshielded' :
+                isSelf ? 'Self Transfer' :
+                isShielded ? (isReceive ? 'Shielded Receive' : 'Shielded Send') :
+                (isReceive ? 'Received' : isSend ? 'Sent' : 'Transaction');
+  const amountStr = tx.amount > 0
+    ? ((isShield || isUnshield) ? formatKRGN(tx.amount) :
+       isSelf ? `-${formatKRGN(tx.amount)}` :
+       isReceive ? `+${formatKRGN(tx.amount)}` : `-${formatKRGN(tx.amount)}`)
+    : '';
+  const amountClass = isReceive ? 'positive' : (isShield || isUnshield) ? '' : 'negative';
+
+  return { isShielded, iconName, iconClass, label, amountStr, amountClass };
 }

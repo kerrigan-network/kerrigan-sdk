@@ -37,6 +37,14 @@ A shield sync server that connects to a Kerrigan full node via JSON-RPC, scans f
 
 [Read the Bridge docs &rarr;](bridge/README.md)
 
+### [`webwallet/`](webwallet/) — kerrigan-webwallet
+
+A zero-install browser wallet for KRGN with full Sapling shielded-transaction support. The SDK compiles to WASM and runs in a Web Worker; keys live only in the browser's IndexedDB, encrypted with AES-256-GCM behind a PBKDF2 passphrase.
+
+**Use this when:** you want to send and receive KRGN (public and private) from any modern browser, without installing anything.
+
+[Read the Webwallet docs &rarr;](webwallet/README.md)
+
 ## Architecture
 
 ```
@@ -88,6 +96,12 @@ cargo build -p kerrigan-sdk
 
 # Run the bridge (requires a Kerrigan full node)
 target/release/kerrigan-bridge --rpc-url http://127.0.0.1:7121 --rpc-user rpc --rpc-pass rpc
+
+# Build the SDK to WASM (for the webwallet)
+wasm-pack build sdk --target web --out-dir pkg
+
+# Build + run the webwallet dev server
+cd webwallet && npm install && npm run dev   # -> http://localhost:5174
 ```
 
 ## Chain parameters

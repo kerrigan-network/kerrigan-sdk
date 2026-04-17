@@ -406,6 +406,18 @@
   gap: 6px;
 }
 
+/* Clickable memo preview in tx rows — opens the full memo modal.
+   Kerrigan purple on hover matches the shielded badge so memos feel like
+   part of the shielded flow, not a generic link. */
+.tx-memo-click {
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.tx-memo-click:hover {
+  color: var(--purple-light);
+}
+
 .tx-amount {
   text-align: right;
   flex-shrink: 0;

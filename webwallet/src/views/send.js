@@ -5,14 +5,17 @@ import { createModal } from '../components/modal.js';
 import { closeModal } from '../router.js';
 import { icon } from '../components/icons.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../templates.js';
 import * as sdk from '../sdk.js';
 import * as net from '../network.js';
 import * as storage from '../storage.js';
-import { saveHistory } from '../sync.js';
+import { saveHistory, startShieldSync } from '../sync.js';
 import { base58Decode } from '../utils.js';
 
 let prefillAddress = null;
 let prefillMax = false;
+// Pay-from override for dual-pool sends (null = auto-select).
+let forcedSourcePool = null;
 
 /** Set prefill for the next modal open — skips address step. */
 export function prefill(address, max = false) {
@@ -102,8 +105,6 @@ function destinationLabel(address) {
 
 // ── Tx type detection ──
 
-let forcedSourcePool = null; // null = auto, 'transparent', 'shielded'
-
 function detectTxType(address) {
   const destShielded = address.startsWith('ks1');
   const source = forcedSourcePool || autoSourcePool(address);
@@ -139,6 +140,32 @@ function feeForType(txType) {
   return sdk.estimateTransparentFee(1, 2);
 }
 
+/**
+ * Exact fee a "send max" transaction will cost, matching what the Rust
+ * builder prices internally. Depends on the actual number of inputs, so we
+ * load utxos/notes lazily.
+ *
+ * NOTE: the sapling builder skips the change output when change == 0, but
+ * its fee formula still reserves space for one. We must match the formula
+ * (not the actual output count) or the builder will reject the tx.
+ */
+async function computeMaxFee(txType) {
+  if (txType === 'shield') return sdk.estimateShieldFee();
+  if (txType === 'transparent') {
+    const utxos = await loadFullUtxos();
+    return sdk.estimateTransparentFee(utxos.length, 1);
+  }
+  if (txType === 'sapling-send') {
+    const notes = await loadShieldNotes();
+    return sdk.estimateShieldSendFee(notes.length);
+  }
+  if (txType === 'unshield') {
+    const notes = await loadShieldNotes();
+    return sdk.estimateUnshieldFee(notes.length);
+  }
+  return feeForType(txType);
+}
+
 // ── Step 2: Amount ──
 
 function showAmountStep(address, autoMax = false) {
@@ -164,6 +191,22 @@ function showAmountStep(address, autoMax = false) {
     </div>
   ` : '';
 
+  // Memo field — Sapling spec allows up to 512 bytes of payload per output, only
+  // on sapling-destination txs (shield-in, sapling-send). Unshield has no sapling
+  // output to attach a memo to.
+  const memoField = isShielded ? `
+    <div class="input-group">
+      <label class="input-label">Memo <span style="color: var(--text-muted); font-weight: 400;">— optional, private</span></label>
+      <textarea id="send-memo" class="input" rows="2" maxlength="512" spellcheck="false"
+                placeholder="A note the recipient will see (or yourself, if sending to self)"
+                style="resize: none; line-height: 1.4; font-size: 13px;"></textarea>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span class="input-hint">Encrypted inside the note — only you and the recipient can read it.</span>
+        <span id="memo-bytes" class="input-hint font-mono">0 / 512</span>
+      </div>
+    </div>
+  ` : '';
+
   content.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: var(--space-lg);">
       <div style="text-align: center;">
@@ -181,6 +224,7 @@ function showAmountStep(address, autoMax = false) {
           <button id="send-max" class="btn btn-ghost" style="font-size: 12px; padding: 2px 8px;">MAX</button>
         </div>
       </div>
+      ${memoField}
       <div id="fee-display" style="display: flex; justify-content: space-between; font-size: 13px; color: var(--text-muted);">
         <span>Network Fee</span>
         <span class="font-mono">${formatKRGNShort(estFee)} KRGN</span>
@@ -194,7 +238,30 @@ function showAmountStep(address, autoMax = false) {
   const confirmBtn = document.getElementById('send-confirm-btn');
   const maxBtn = document.getElementById('send-max');
   const backBtn = document.getElementById('send-back');
-  let sendMax = false;
+  const memoInput = document.getElementById('send-memo');
+  const memoBytesEl = document.getElementById('memo-bytes');
+  // Fee that will actually be paid by the built tx. Starts at the display
+  // estimate (1-in, 2-out shape) and gets replaced with a precise value
+  // when the user picks MAX (no change output, actual input count).
+  let currentFee = estFee;
+
+  // Live memo byte counter. Memos are byte-bounded (512), not char-bounded —
+  // emoji and other multi-byte chars eat more of the budget than their
+  // displayed width suggests, so we show bytes and soft-warn near the limit.
+  memoInput?.addEventListener('input', () => {
+    const bytes = new TextEncoder().encode(memoInput.value).length;
+    if (bytes > 512) {
+      // Truncate at the last whole UTF-8 codepoint under 512 bytes.
+      let truncated = memoInput.value;
+      while (new TextEncoder().encode(truncated).length > 512) {
+        truncated = truncated.slice(0, -1);
+      }
+      memoInput.value = truncated;
+    }
+    const actualBytes = new TextEncoder().encode(memoInput.value).length;
+    memoBytesEl.textContent = `${actualBytes} / 512`;
+    memoBytesEl.style.color = actualBytes > 480 ? 'var(--yellow)' : '';
+  });
 
   // Pool toggle
   document.querySelectorAll('[data-pool]').forEach(btn => {
@@ -205,15 +272,16 @@ function showAmountStep(address, autoMax = false) {
   });
 
   amountInput?.addEventListener('input', () => {
-    sendMax = false;
+    currentFee = estFee;
     const val = parseFloat(amountInput.value) || 0;
     const sats = Math.round(val * 1e8);
-    confirmBtn.disabled = sats <= 0 || sats + estFee > available;
+    confirmBtn.disabled = sats <= 0 || sats + currentFee > available;
   });
 
-  maxBtn?.addEventListener('click', () => {
-    sendMax = true;
-    const maxSats = available - estFee;
+  maxBtn?.addEventListener('click', async () => {
+    const maxFee = await computeMaxFee(txType);
+    currentFee = maxFee;
+    const maxSats = available - maxFee;
     if (maxSats > 0) {
       amountInput.value = formatKRGNPlain(maxSats);
       confirmBtn.disabled = false;
@@ -222,8 +290,9 @@ function showAmountStep(address, autoMax = false) {
 
   confirmBtn?.addEventListener('click', () => {
     const val = parseFloat(amountInput.value) || 0;
-    const sats = sendMax ? 0 : Math.round(val * 1e8); // 0 = send max in WASM
-    showConfirmStep(address, sats, sendMax ? available - estFee : sats, estFee);
+    const sats = Math.round(val * 1e8);
+    const memo = memoInput?.value?.trim() || '';
+    showConfirmStep(address, sats, sats, currentFee, memo);
   });
 
   // Auto-fill max if prefilled (shield nudge)
@@ -241,12 +310,22 @@ function showAmountStep(address, autoMax = false) {
 
 // ── Step 3: Confirm ──
 
-function showConfirmStep(address, amountSats, displayAmount, estFee) {
+function showConfirmStep(address, amountSats, displayAmount, estFee, memo = '') {
   const content = document.getElementById('send-content');
   if (!content) return;
 
   const isSendMax = amountSats === 0;
   const self = isOwnAddress(address);
+
+  // Memo preview row — only rendered when there's actually a memo. Escaped
+  // before interpolation because users can type anything, including HTML.
+  const memoRow = memo ? `
+    <div class="divider" style="margin: 0;"></div>
+    <div style="display: flex; justify-content: space-between; gap: var(--space-md); font-size: 14px;">
+      <span style="color: var(--text-muted); flex-shrink: 0;">Memo</span>
+      <span style="color: var(--text-primary); font-style: italic; text-align: right; word-break: break-word;">"${escapeHtml(memo)}"</span>
+    </div>
+  ` : '';
 
   content.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: var(--space-lg);">
@@ -261,6 +340,7 @@ function showConfirmStep(address, amountSats, displayAmount, estFee) {
           <span style="color: var(--text-muted);">To</span>
           <span style="color: ${self ? 'var(--purple-light)' : 'var(--text-primary)'}; font-weight: 500;">${destinationLabel(address)}</span>
         </div>
+        ${memoRow}
         <div class="divider" style="margin: 0;"></div>
         <div style="display: flex; justify-content: space-between; font-size: 14px;">
           <span style="color: var(--text-muted);">Fee</span>
@@ -278,7 +358,7 @@ function showConfirmStep(address, amountSats, displayAmount, estFee) {
   `;
 
   document.getElementById('send-broadcast')?.addEventListener('click', () => {
-    broadcastTx(address, amountSats, displayAmount);
+    broadcastTx(address, amountSats, displayAmount, memo);
   });
 
   document.getElementById('send-back2')?.addEventListener('click', () => {
@@ -288,7 +368,7 @@ function showConfirmStep(address, amountSats, displayAmount, estFee) {
 
 // ── Step 4: Broadcast ──
 
-async function broadcastTx(address, amountSats, displayAmount) {
+async function broadcastTx(address, amountSats, displayAmount, memo = '') {
   const content = document.getElementById('send-content');
   const btn = document.getElementById('send-broadcast');
   const txType = detectTxType(address);
@@ -302,7 +382,6 @@ async function broadcastTx(address, amountSats, displayAmount) {
     // For spending shielded notes, sync to tip first (fresh anchor required)
     if (txType === 'sapling-send' || txType === 'unshield') {
       if (btn) btn.textContent = 'Syncing shield data...';
-      const { startShieldSync } = await import('../sync.js');
       await startShieldSync();
     }
 
@@ -319,11 +398,11 @@ async function broadcastTx(address, amountSats, displayAmount) {
 
     } else if (txType === 'shield') {
       const utxos = await loadFullUtxos();
-      result = await sdk.buildShieldTx(utxos, address, amountSats, '', store.wallet.seed, 0, 0);
+      result = await sdk.buildShieldTx(utxos, address, amountSats, memo, store.wallet.seed, 0, 0);
 
     } else if (txType === 'sapling-send') {
       const notes = await loadShieldNotes();
-      result = await sdk.buildSaplingSendTx(notes, address, amountSats, '', store.wallet.seed);
+      result = await sdk.buildSaplingSendTx(notes, address, amountSats, memo, store.wallet.seed);
 
     } else if (txType === 'unshield') {
       const notes = await loadShieldNotes();
@@ -355,7 +434,7 @@ async function broadcastTx(address, amountSats, displayAmount) {
     showToast(`${successLabel} ${formatKRGNShort(displayAmount)} KRGN`, 'success');
 
     // Update local state based on tx type
-    await updateStateAfterSend(txType, address, displayAmount, result);
+    await updateStateAfterSend(txType, address, displayAmount, result, memo);
 
   } catch (err) {
     showToast(`Send failed: ${err.message}`, 'error');
@@ -382,7 +461,7 @@ async function loadShieldNotes() {
 }
 
 /** Update balances, UTXOs, notes, and history after a successful send. */
-async function updateStateAfterSend(txType, address, displayAmount, result) {
+async function updateStateAfterSend(txType, address, displayAmount, result, memo = '') {
   const fee = Number(result.fee);
   const self = isOwnAddress(address);
   const sentTxid = result.txid || '';
@@ -399,10 +478,22 @@ async function updateStateAfterSend(txType, address, displayAmount, result) {
     store.balance.transparent = remaining.reduce((s, u) => s + Number(u.value), 0);
 
   } else if (txType === 'shield') {
-    // All transparent UTXOs consumed
-    await storage.setItem('transparent_utxos', []);
-    store.balance.transparent = 0;
-    // Note: shielded balance won't show until next shield sync picks up the new note
+    // Shield may be partial: remove only the UTXOs the builder actually
+    // consumed, and if the input total exceeded `amount + fee`, record the
+    // transparent change so the next ElectrumX refresh doesn't double-count.
+    const utxos = await storage.getItem('transparent_utxos') || [];
+    const spentSet = new Set((result.spent_utxos || []).map(s => `${s[0]}:${s[1]}`));
+    const remaining = utxos.filter(u => !spentSet.has(`${u.tx_hash}:${u.tx_pos}`));
+    const inputTotal = utxos
+      .filter(u => spentSet.has(`${u.tx_hash}:${u.tx_pos}`))
+      .reduce((s, u) => s + Number(u.value), 0);
+    const changeAmount = inputTotal - displayAmount - fee;
+    // Shield tx places transparent change as vout index 0 (the only
+    // transparent output; sapling outputs are in the extra payload).
+    if (changeAmount > 0) remaining.push({ tx_hash: sentTxid, tx_pos: 0, value: changeAmount, height: 0 });
+    await storage.setItem('transparent_utxos', remaining);
+    store.balance.transparent = remaining.reduce((s, u) => s + Number(u.value), 0);
+    // Shielded balance won't show until next shield sync picks up the new note.
 
   } else if (txType === 'sapling-send') {
     // Decrement shielded balance by amount + fee
@@ -417,7 +508,11 @@ async function updateStateAfterSend(txType, address, displayAmount, result) {
     // Note: transparent balance won't show until ElectrumX picks up the new UTXO
   }
 
-  // Insert history entry (skip for shielding — shield sync + ElectrumX will handle it)
+  // Insert history entry. Memo is only meaningful for shielded-destination
+  // txs (shield, sapling-send) where we actually attached one — the sync
+  // layer will also surface the memo on the recipient side when it processes
+  // the tx, but for the sender we already know it so attach it now so the
+  // UI doesn't flicker "no memo" → "memo" once sync lands.
   if (txType === 'shield') {
     // Shielding: single "Shielded" entry — shield sync will add the receive side
     // Store the txid so ElectrumX transparent history can mark it as a shield tx
@@ -427,7 +522,7 @@ async function updateStateAfterSend(txType, address, displayAmount, result) {
       amount: displayAmount,
       pool: 'shielded',
       confirmations: 0,
-      memo: '',
+      memo,
       timestamp: Date.now(),
       address,
       height: 0,
@@ -452,7 +547,7 @@ async function updateStateAfterSend(txType, address, displayAmount, result) {
       amount: self ? fee : displayAmount,
       pool,
       confirmations: 0,
-      memo: '',
+      memo: pool === 'shielded' ? memo : '',
       timestamp: Date.now(),
       address,
       height: 0,
