@@ -46,66 +46,66 @@ pub fn append_blocks(
     Ok(entries)
 }
 
-/// Recover shield.bin by truncating to the last complete block marker.
+/// Recover shield.bin by truncating only the trailing incomplete packet, if any.
 ///
-/// Scans through the binary stream to find the last valid block marker
-/// (0x5d packet), then truncates everything after it. Prevents a
-/// half-written block from corrupting the stream on crash.
+/// Walks the binary stream packet-by-packet. A packet is complete when the
+/// entire body declared by its length prefix is present in the file. The
+/// first truncated packet marks the recovery point: everything before it is
+/// kept (including the full last-block's tx packets), everything from it
+/// onwards is discarded.
 ///
-/// Returns the height of the last good block, or None if empty/corrupt.
+/// Previous behavior truncated at the byte right after the last block
+/// marker, which unconditionally deleted the final block's tx packets even
+/// on a clean shutdown — so every restart silently orphaned one block's
+/// worth of data, leaving a marker-only entry in the stream.
+///
+/// Returns the height of the last block marker that survives the recovery,
+/// or None if the file is empty / has no markers.
 pub fn recover_cache(path: &str) -> Option<u32> {
     if !Path::new(path).exists() || fs::metadata(path).map(|m| m.len()).unwrap_or(0) == 0 {
         return None;
     }
 
     let data = fs::read(path).ok()?;
-    let last_marker_end = find_last_block_marker(&data)?;
 
-    if last_marker_end < data.len() {
-        eprintln!(
-            "  [recovery] Truncating shield.bin from {} to {} bytes",
-            data.len(),
-            last_marker_end
-        );
-        let file = OpenOptions::new().write(true).open(path).ok()?;
-        file.set_len(last_marker_end as u64).ok()?;
-    }
-
-    // Extract height from the last block marker.
-    // Compact block marker: [4-byte LE len=5][0x5d][height:4LE]
-    let marker_start = last_marker_end - 5; // 5-byte payload
-    let height = u32::from_le_bytes([
-        data[marker_start + 1],
-        data[marker_start + 2],
-        data[marker_start + 3],
-        data[marker_start + 4],
-    ]);
-
-    Some(height)
-}
-
-/// Scan the binary stream to find the byte offset just past the last
-/// complete block marker (0x5d packet).
-fn find_last_block_marker(data: &[u8]) -> Option<usize> {
+    // Walk packets: advance while each is complete, stop at the first truncated one.
     let mut pos = 0;
-    let mut last_marker_end = None;
+    let mut last_complete_end = 0;
+    let mut last_marker_height: Option<u32> = None;
 
     while pos + 4 <= data.len() {
         let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
             as usize;
-
         let packet_end = pos + 4 + len;
         if packet_end > data.len() {
-            break; // Incomplete packet
+            // Truncated packet — recovery point.
+            break;
         }
 
-        // Block marker: first payload byte is 0x5d, length is 5 (compact) or 9 (pivx-compat)
-        if (len == 5 || len == 9) && data[pos + 4] == 0x5d {
-            last_marker_end = Some(packet_end);
+        // Block marker: payload type byte 0x5d with payload len 5 (compact) or 9 (legacy).
+        // We need +8 bounds for the 4-byte height read below.
+        if (len == 5 || len == 9) && pos + 9 <= data.len() && data[pos + 4] == 0x5d {
+            last_marker_height = Some(u32::from_le_bytes([
+                data[pos + 5],
+                data[pos + 6],
+                data[pos + 7],
+                data[pos + 8],
+            ]));
         }
 
         pos = packet_end;
+        last_complete_end = packet_end;
     }
 
-    last_marker_end
+    if last_complete_end < data.len() {
+        eprintln!(
+            "  [recovery] Truncating shield.bin from {} to {} bytes (incomplete trailing packet)",
+            data.len(),
+            last_complete_end
+        );
+        let file = OpenOptions::new().write(true).open(path).ok()?;
+        file.set_len(last_complete_end as u64).ok()?;
+    }
+
+    last_marker_height
 }
