@@ -114,60 +114,114 @@ fn index_new_blocks(
         return;
     }
 
-    match scanner::scan_range(&rpc, scan_from, chain_height, &state.block_cache, chain_height, |_, _| {}) {
-        Ok(blocks) => {
-            rt.block_on(async {
-                // Filter against index to prevent ZMQ+poll race duplicates
-                let index = state.index.read().await;
-                let new_blocks: Vec<_> = blocks.iter()
-                    .filter(|b| !index.shield_heights.contains(&b.height))
-                    .cloned()
-                    .collect();
-                drop(index);
+    // One-block-at-a-time indexer loop. Invariant: `last_scanned` ONLY
+    // advances after scan_block returns Ok for block `last_scanned + 1`.
+    // On Err we break and return — the next poll tick (or ZMQ event) will
+    // re-enter and retry the exact same block. No skipping, no advancing
+    // past a block we couldn't process. This is the only way to guarantee
+    // the indexer never silently drops a Sapling tx — see
+    // feedback_indexer_never_skip.md for the incident that motivated this.
+    let mut indexed_count: u32 = 0;
+    let mut needs_persist = false;
+    loop {
+        let target_h = {
+            let idx = rt.block_on(async { state.index.read().await.last_scanned });
+            idx + 1
+        };
+        if target_h > chain_height {
+            break;
+        }
 
-                if new_blocks.is_empty() {
-                    return;
-                }
-
-                let count = new_blocks.len();
-                let new_bytes = stream::encode_shield_stream(
-                    &new_blocks, api::StreamFormat::Compact,
-                );
-
-                // Append to shield.bin on disk
-                let cache_entries = {
-                    let mut file = state.cache_file.lock().await;
-                    shield_cache::append_blocks(&mut file, &new_blocks).ok()
-                };
-
-                // Append to in-memory buffer
-                {
-                    let mut buffer = state.shield_buffer.write().await;
-                    buffer.extend_from_slice(&new_bytes);
-                }
-
-                // Update index with byte offsets
-                let mut index = state.index.write().await;
-                if let Some(entries) = cache_entries {
-                    for (height, offset, _len) in entries {
-                        index.add(height, offset);
+        match scanner::scan_block(&rpc, target_h, &state.block_cache, chain_height) {
+            Ok(Some(block)) => {
+                // Shield-bearing block: append to cache/buffer/index, then
+                // advance cursor. Order matters — if append fails, cursor
+                // stays put and we retry on next tick.
+                let appended = rt.block_on(async {
+                    // Idempotency belt-and-suspenders: if this height is
+                    // already indexed (shouldn't happen given the outer
+                    // indexing mutex, but cheap to check), just advance
+                    // past it without re-appending.
+                    {
+                        let idx = state.index.read().await;
+                        if idx.shield_heights.contains(&block.height) {
+                            return true;
+                        }
                     }
-                } else {
-                    for block in &new_blocks {
+
+                    let block_slice = std::slice::from_ref(&block);
+                    let new_bytes = stream::encode_shield_stream(
+                        block_slice, api::StreamFormat::Compact,
+                    );
+
+                    let cache_entries = {
+                        let mut file = state.cache_file.lock().await;
+                        shield_cache::append_blocks(&mut file, block_slice).ok()
+                    };
+
+                    {
+                        let mut buffer = state.shield_buffer.write().await;
+                        buffer.extend_from_slice(&new_bytes);
+                    }
+
+                    let mut index = state.index.write().await;
+                    if let Some(entries) = cache_entries {
+                        for (height, offset, _len) in entries {
+                            index.add(height, offset);
+                        }
+                    } else {
                         index.add_shield_block(block.height);
                     }
+                    true
+                });
+                if !appended {
+                    // Unreachable given current append_blocks behaviour,
+                    // but future-proof: don't advance on append failure.
+                    eprintln!("  [{source}] Block {target_h}: append failed, will retry");
+                    break;
                 }
-                index.last_scanned = chain_height;
-                let _ = index.save(index_path);
 
-                if count > 0 {
-                    eprintln!("  [{source}] Indexed {count} new shield block(s) (chain: {chain_height})");
-                }
-            });
+                // Advance cursor and persist — this is the only place
+                // where `last_scanned` moves forward after a shield block.
+                rt.block_on(async {
+                    let mut index = state.index.write().await;
+                    index.last_scanned = target_h;
+                    let _ = index.save(index_path);
+                });
+                needs_persist = false;
+                indexed_count += 1;
+                eprintln!("  [{source}] Indexed shield block {target_h} (chain: {chain_height})");
+            }
+            Ok(None) => {
+                // No shield data in this block — successful scan, just
+                // advance the cursor in memory. We batch-persist at the
+                // end of the loop to avoid a disk write per empty block
+                // during catch-up.
+                rt.block_on(async {
+                    let mut index = state.index.write().await;
+                    index.last_scanned = target_h;
+                });
+                needs_persist = true;
+            }
+            Err(e) => {
+                // Transient (or persistent) scan failure. Do NOT advance
+                // the cursor — next tick will retry this same height.
+                eprintln!("  [{source}] Block {target_h} scan failed: {e} — will retry");
+                break;
+            }
         }
-        Err(e) => {
-            eprintln!("  [{source}] Scan error: {e}");
-        }
+    }
+
+    // Persist any cursor advancement through non-shield blocks.
+    if needs_persist {
+        rt.block_on(async {
+            let index = state.index.read().await;
+            let _ = index.save(index_path);
+        });
+    }
+
+    if indexed_count > 0 {
+        eprintln!("  [{source}] Catch-up complete: {indexed_count} shield block(s) indexed this pass");
     }
 }
 
