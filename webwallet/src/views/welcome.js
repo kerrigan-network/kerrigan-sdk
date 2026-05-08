@@ -13,6 +13,11 @@ let step = 'choice';
 let mnemonic = '';
 let seedWords = [];
 let verifyIndices = [];
+/** Which onboarding path the user is on. Set when they pick "Create" or
+ *  "Restore" from the choice screen, then used at the passphrase step
+ *  to label the action button + success toast appropriately. Defaults
+ *  to 'create' for safety (the original copy). */
+let flow = 'create';
 
 const LOCK_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="flex-shrink: 0; color: var(--purple-light);"><path d="M17 11V8C17 5.23858 14.7614 3 12 3C9.23858 3 7 5.23858 7 8V11M7.8 21H16.2C17.8802 21 18.7202 21 19.362 20.673C19.9265 20.3854 20.3854 19.9265 20.673 19.362C21 18.7202 21 17.8802 21 16.2V15.8C21 14.1198 21 13.2798 20.673 12.638C20.3854 12.0735 19.9265 11.6146 19.362 11.327C18.7202 11 17.8802 11 16.2 11H7.8C6.11984 11 5.27976 11 4.63803 11.327C4.07354 11.6146 3.6146 12.0735 3.32698 12.638C3 13.2798 3 14.1198 3 15.8V16.2C3 17.8802 3 18.7202 3.32698 19.362C3.6146 19.9265 4.07354 20.3854 4.63803 20.673C5.27976 21 6.11984 21 7.8 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -36,7 +41,7 @@ function renderChoice() {
     <div class="welcome stagger">
       <div class="welcome-crystal">${icon('crystal')}</div>
       <h1 class="welcome-title"><span>Kerrigan</span> Wallet</h1>
-      <p class="welcome-subtitle">Secure, private, yours. Create or restore your wallet to get started.</p>
+      <p class="welcome-subtitle">Your piece of the Swarm.</p>
       <div class="welcome-actions">
         ${T.btnPrimary('btn-create', 'Create New Wallet', { full: true, lg: true })}
         ${T.btnSecondary('btn-restore', 'Restore Wallet', { full: true, lg: true })}
@@ -49,10 +54,15 @@ function mountChoice() {
   document.getElementById('btn-create')?.addEventListener('click', () => {
     mnemonic = sdk.generateMnemonic12();
     seedWords = mnemonic.split(' ');
+    flow = 'create';
     step = 'create-seed';
     rerender();
   });
-  document.getElementById('btn-restore')?.addEventListener('click', () => { step = 'restore'; rerender(); });
+  document.getElementById('btn-restore')?.addEventListener('click', () => {
+    flow = 'import';
+    step = 'restore';
+    rerender();
+  });
 }
 
 // ── Seed Display ──
@@ -184,6 +194,7 @@ function mountRestore() {
 // ── Passphrase ──
 
 function renderPassphrase() {
+  const ctaLabel = flow === 'import' ? 'Import Wallet' : 'Create Wallet';
   return T.fullscreen(`
     <div class="passphrase-screen stagger">
       <h2 style="font-size: 22px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 10px;">
@@ -199,7 +210,7 @@ function renderPassphrase() {
         </div>
       </div>
       ${T.passwordInput('pass-confirm', 'Confirm passphrase', 'new-password')}
-      ${T.btnPrimary('btn-pass-save', 'Create Wallet', { full: true, lg: true, disabled: true, style: 'margin-top: var(--space-md);' })}
+      ${T.btnPrimary('btn-pass-save', ctaLabel, { full: true, lg: true, disabled: true, style: 'margin-top: var(--space-md);' })}
     </div>
   `);
 }
@@ -253,12 +264,15 @@ function mountPassphrase() {
       mnemonic = '';
       seedWords = [];
 
-      showToast('Wallet created successfully', 'success');
+      showToast(
+        flow === 'import' ? 'Wallet imported successfully' : 'Wallet created successfully',
+        'success',
+      );
       navigate('dashboard');
     } catch (err) {
       showToast(`Error: ${err.message}`, 'error');
       btn.disabled = false;
-      btn.textContent = 'Create Wallet';
+      btn.textContent = flow === 'import' ? 'Import Wallet' : 'Create Wallet';
     }
   });
 

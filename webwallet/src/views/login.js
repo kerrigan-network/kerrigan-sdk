@@ -13,7 +13,7 @@ export function render() {
     html: T.fullscreen(`
       <div class="login stagger">
         <div class="login-crystal">${icon('crystal')}</div>
-        <h1 class="login-title">Welcome Back</h1>
+        <h1 class="login-title">Welcome back.</h1>
         <p style="font-size: 14px; color: var(--text-secondary);">Enter your passphrase to unlock</p>
         ${T.passwordInput('login-pass')}
         ${T.btnPrimary('btn-unlock', 'Unlock', { full: true, lg: true, style: 'margin-top: var(--space-xs);' })}

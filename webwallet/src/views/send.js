@@ -244,6 +244,12 @@ function showAmountStep(address, autoMax = false) {
   // estimate (1-in, 2-out shape) and gets replaced with a precise value
   // when the user picks MAX (no change output, actual input count).
   let currentFee = estFee;
+  // Set when the user clicks MAX on a transparent send — flips the
+  // builder to `buildTransparentMaxTx`, which uses the SDK's no-change
+  // path. Without this flag the regular selector reserves a change
+  // output in its fee math and rejects amounts that fit a 1-out tx but
+  // not a 2-out one (340 sat gap = the change-output bytes × fee/byte).
+  let isMaxTransparent = false;
 
   // Live memo byte counter. Memos are byte-bounded (512), not char-bounded —
   // emoji and other multi-byte chars eat more of the budget than their
@@ -273,12 +279,33 @@ function showAmountStep(address, autoMax = false) {
 
   amountInput?.addEventListener('input', () => {
     currentFee = estFee;
+    isMaxTransparent = false;
     const val = parseFloat(amountInput.value) || 0;
     const sats = Math.round(val * 1e8);
     confirmBtn.disabled = sats <= 0 || sats + currentFee > available;
   });
 
   maxBtn?.addEventListener('click', async () => {
+    // Transparent Max routes through `buildTransparentMaxTx` (no-change,
+    // 1-out shape) at broadcast time. Here we just preview the amount
+    // and fee using the actual loaded UTXOs so the count matches what
+    // the builder will spend.
+    if (txType === 'transparent') {
+      const utxos = await loadFullUtxos();
+      const totalAvailable = utxos.reduce((s, u) => s + Number(u.amount), 0);
+      const maxFee = sdk.estimateTransparentFee(utxos.length, 1);
+      const maxSats = totalAvailable - maxFee;
+      if (maxSats > 0) {
+        currentFee = maxFee;
+        isMaxTransparent = true;
+        amountInput.value = formatKRGNPlain(maxSats);
+        confirmBtn.disabled = false;
+      }
+      return;
+    }
+    // Shield / sapling-send / unshield: fee depends on note count
+    // (loaded inside computeMaxFee), and `available` is the shielded
+    // balance which is sourced from the SAME notes — no drift risk.
     const maxFee = await computeMaxFee(txType);
     currentFee = maxFee;
     const maxSats = available - maxFee;
@@ -292,7 +319,7 @@ function showAmountStep(address, autoMax = false) {
     const val = parseFloat(amountInput.value) || 0;
     const sats = Math.round(val * 1e8);
     const memo = memoInput?.value?.trim() || '';
-    showConfirmStep(address, sats, sats, currentFee, memo);
+    showConfirmStep(address, sats, sats, currentFee, memo, isMaxTransparent);
   });
 
   // Auto-fill max if prefilled (shield nudge)
@@ -310,7 +337,7 @@ function showAmountStep(address, autoMax = false) {
 
 // ── Step 3: Confirm ──
 
-function showConfirmStep(address, amountSats, displayAmount, estFee, memo = '') {
+function showConfirmStep(address, amountSats, displayAmount, estFee, memo = '', isMaxTransparent = false) {
   const content = document.getElementById('send-content');
   if (!content) return;
 
@@ -358,7 +385,7 @@ function showConfirmStep(address, amountSats, displayAmount, estFee, memo = '') 
   `;
 
   document.getElementById('send-broadcast')?.addEventListener('click', () => {
-    broadcastTx(address, amountSats, displayAmount, memo);
+    broadcastTx(address, amountSats, displayAmount, memo, isMaxTransparent);
   });
 
   document.getElementById('send-back2')?.addEventListener('click', () => {
@@ -368,7 +395,7 @@ function showConfirmStep(address, amountSats, displayAmount, estFee, memo = '') 
 
 // ── Step 4: Broadcast ──
 
-async function broadcastTx(address, amountSats, displayAmount, memo = '') {
+async function broadcastTx(address, amountSats, displayAmount, memo = '', isMaxTransparent = false) {
   const content = document.getElementById('send-content');
   const btn = document.getElementById('send-broadcast');
   const txType = detectTxType(address);
@@ -394,7 +421,9 @@ async function broadcastTx(address, amountSats, displayAmount, memo = '') {
 
     if (txType === 'transparent') {
       const utxos = await loadFullUtxos();
-      result = sdk.buildTransparentTx(utxos, address, amountSats, store.wallet.seed, 0, 0);
+      result = isMaxTransparent
+        ? sdk.buildTransparentMaxTx(utxos, address, store.wallet.seed, 0, 0)
+        : sdk.buildTransparentTx(utxos, address, amountSats, store.wallet.seed, 0, 0);
 
     } else if (txType === 'shield') {
       const utxos = await loadFullUtxos();
@@ -444,10 +473,18 @@ async function broadcastTx(address, amountSats, displayAmount, memo = '') {
 
 /** Load transparent UTXOs with script_pubkey attached. */
 async function loadFullUtxos() {
-  const utxos = await storage.getItem('transparent_utxos') || [];
-  if (utxos.length === 0) throw new Error('No transparent UTXOs available');
+  const all = await storage.getItem('transparent_utxos') || [];
+  if (all.length === 0) throw new Error('No transparent UTXOs available');
+  // Filter out immature coinbase UTXOs (masternode/mining rewards <100
+  // confs). Spending one would trigger `bad-txns-premature-spend-of-
+  // coinbase` at the node and a 500 from the bridge. Pre-fix UTXOs lack
+  // the `mature` flag — default to mature=true so legacy data still spends.
+  const spendable = all.filter(u => u.mature !== false);
+  if (spendable.length === 0) {
+    throw new Error(`All ${all.length} UTXOs are immature (masternode rewards need 100 confirmations before spending)`);
+  }
   const scriptPubkey = sdk.hexEncode(new Uint8Array(deriveScriptPubkey(store.wallet.transparentAddr)));
-  return utxos.map(u => ({
+  return spendable.map(u => ({
     txid: u.tx_hash, vout: Number(u.tx_pos), amount: Number(u.value), script_pubkey: scriptPubkey,
   }));
 }

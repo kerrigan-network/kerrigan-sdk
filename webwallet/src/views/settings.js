@@ -168,7 +168,9 @@ function showSeedReveal() {
           Never share these words with anyone.
         </p>
         ${T.seedGrid(words)}
+        ${T.copyBtn('btn-copy-backup-seed', 'Copy Phrase')}
       `, { style: 'border-color: var(--purple); margin-bottom: var(--space-md);' });
+      T.wireCopyBtn('btn-copy-backup-seed', () => words.join(' '));
       seedRevealed = true;
     } catch (err) {
       showToast(`Failed: ${err.message}`, 'error');

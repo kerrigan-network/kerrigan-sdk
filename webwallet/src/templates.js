@@ -219,23 +219,140 @@ export function divider() {
  * strings; the caller wraps them in whatever markup is appropriate. Keeping
  * this single-sourced prevents the dashboard and activity views drifting.
  */
+/** Single source of truth for ordering wallet history.
+ *
+ *  Most-recent first. Sort key is block height — Electrum reports it on
+ *  every history poll, so it stays current as txs confirm. We deliberately
+ *  do NOT use `tx.timestamp` for sorting: that field is captured once at
+ *  first-observation time and never refreshed, so anything first seen as
+ *  mempool stays at ts=0 forever even after it confirms, and any sort
+ *  using it produces nonsense for some entries.
+ *
+ *  Ordering:
+ *   - Genuinely-mempool txs (height=0 AND confirmations=0) pin to the top.
+ *   - Confirmed txs whose `height` was never backfilled (an older wallet
+ *     bug stamped shield/unshield rows as height=0 and never updated them
+ *     post-confirmation) are sorted by a *derived* height = confirmations,
+ *     so they land in a reasonable order relative to each other and below
+ *     truly-mempool rows. Not perfect — it can't compare them accurately
+ *     against transparent rows with real heights — but it's miles better
+ *     than the old behaviour of pinning them all to the very top.
+ *   - Everything else sorts by real block height.
+ *
+ *  Both the dashboard's "Recent Activity" and the full Activity tab go
+ *  through here so they cannot diverge. */
+export function orderedHistory(history) {
+  const MEMPOOL_TOP = Number.MAX_SAFE_INTEGER;
+  // Sentinel smaller than any real positive height, so heightless-
+  // confirmed rows (a legacy data bug in old shield/unshield entries)
+  // land BELOW everything with a known height, not above.
+  const HEIGHTLESS_CONFIRMED = -1;
+  const primary = (tx) => {
+    const h = Number(tx.height) || 0;
+    if (h > 0) return h;
+    const confs = Number(tx.confirmations) || 0;
+    return confs === 0 ? MEMPOOL_TOP : HEIGHTLESS_CONFIRMED;
+  };
+  return [...history].sort((a, b) => {
+    const pa = primary(a), pb = primary(b);
+    if (pa !== pb) return pb - pa;
+    // Same tier — tiebreak by confirmations ascending (fewer confs =
+    // newer block = should render higher).
+    return (Number(a.confirmations) || 0) - (Number(b.confirmations) || 0);
+  });
+}
+
+/** Shared transaction-row markup used by every history listing.
+ *
+ *  Pure HTML string: callers wire up event delegation themselves (memo
+ *  click, txid → explorer). Kept identical across the dashboard's
+ *  "Recent Activity" and the full Activity tab so the two can never
+ *  drift in label, icon, formatting, or layout. */
+export function txRow(tx, formatKRGN) {
+  const { isShielded, iconName, iconClass, label, amountStr, amountClass } = classifyTx(tx, formatKRGN);
+
+  const time = tx.timestamp > 0
+    ? new Date(tx.timestamp).toLocaleDateString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      })
+    : '';
+
+  const memoSafe = tx.memo
+    ? escapeHtml(tx.memo.slice(0, 20)) + (tx.memo.length > 20 ? '…' : '')
+    : '';
+  const memoSpan = tx.memo
+    ? `<span class="tx-memo-click" data-memo="${escapeHtml(tx.memo)}">"${memoSafe}"</span>`
+    : '';
+
+  return `
+    <div class="tx-row" ${tx.txid ? `data-txid="${escapeHtml(tx.txid)}" style="cursor: pointer;"` : ''}>
+      <div class="tx-icon ${iconClass}">
+        <span style="width: 18px; height: 18px; display: flex;">${icon(iconName)}</span>
+      </div>
+      <div class="tx-details">
+        <div class="tx-type">
+          ${label}
+          ${isShielded ? '<span class="badge badge-shielded" style="font-size: 10px; padding: 1px 6px;">Shielded</span>' : ''}
+        </div>
+        <div class="tx-meta">
+          ${time ? `<span>${time}</span>` : ''}
+          ${memoSpan}
+        </div>
+      </div>
+      <div class="tx-amount">
+        <div class="tx-amount-value ${amountClass}">${amountStr}</div>
+        <div class="tx-confirmations">
+          ${tx.confirmations > 0 ? `${tx.confirmations} conf` : '<span class="text-yellow">pending</span>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 export function classifyTx(tx, formatKRGN) {
-  const isReceive = tx.type === 'received';
+  // 'reward' is a sub-class of receive — coinbase tx where one of the
+  // outputs paid us. Treat as a receive for amount/icon-direction
+  // purposes, but the label/icon get the dedicated reward treatment.
+  const isReward = tx.type === 'reward';
+  const isReceive = tx.type === 'received' || isReward;
   const isSend = tx.type === 'sent';
   const isSelf = tx.type === 'self';
   const isShield = tx.type === 'shield';
   const isUnshield = tx.type === 'unshield';
   const isShielded = tx.pool === 'shielded';
 
-  const iconName = isShield ? 'shieldFilled' : isUnshield ? 'unlock' :
+  // Inference-protocol markers on the OP_RETURN. Only override the label
+  // (+ icon) when the underlying tx IS what the marker says — a provider
+  // registration we sent, a payment we sent, a refund we received, etc.
+  // Never let an OP_RETURN tag a tx as something it isn't.
+  const infKind = tx.inferenceKind;
+  const infLabel = (() => {
+    if (!infKind) return null;
+    if (infKind === 'payment' && isSend)  return 'Inference Payment';
+    if (infKind === 'refund'  && isReceive) return 'Inference Refund';
+    if (infKind === 'refund'  && isSend)  return 'Inference Refund Sent';
+    if (infKind === 'register' && isSend) return 'Drone Registration';
+    if (infKind === 'rep')               return 'Rep Update';
+    if (infKind === 'escalation')        return 'Escalation Request';
+    if (infKind === 'verdict')           return 'Escalation Verdict';
+    return null;
+  })();
+
+  const iconName = infKind ? 'brain' :
+                   isReward ? 'gift' :
+                   isShield ? 'shieldFilled' : isUnshield ? 'unlock' :
                    isShielded ? 'shieldFilled' : isSelf ? 'refresh' :
                    (isReceive ? 'receive' : 'send');
-  const iconClass = (isShield || isShielded) ? 'shielded' : isSelf ? 'sent' :
+  const iconClass = infKind ? 'inference' :
+                    isReward ? 'reward' :
+                    (isShield || isShielded) ? 'shielded' : isSelf ? 'sent' :
                     (isReceive ? 'received' : 'sent');
-  const label = isShield ? 'Shielded' : isUnshield ? 'Unshielded' :
-                isSelf ? 'Self Transfer' :
-                isShielded ? (isReceive ? 'Shielded Receive' : 'Shielded Send') :
-                (isReceive ? 'Received' : isSend ? 'Sent' : 'Transaction');
+  const label = infLabel ||
+                (isReward ? 'Masternode Reward' :
+                 isShield ? 'Shielded' : isUnshield ? 'Unshielded' :
+                 isSelf ? 'Self Transfer' :
+                 isShielded ? (isReceive ? 'Shielded Receive' : 'Shielded Send') :
+                 (isReceive ? 'Received' : isSend ? 'Sent' : 'Transaction'));
   const amountStr = tx.amount > 0
     ? ((isShield || isUnshield) ? formatKRGN(tx.amount) :
        isSelf ? `-${formatKRGN(tx.amount)}` :

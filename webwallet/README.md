@@ -137,7 +137,7 @@ wallet.kerrigan.network {
     header {
         Cross-Origin-Opener-Policy "same-origin"
         Cross-Origin-Embedder-Policy "require-corp"
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://kerrigan-bridge.jskitty.cat wss://electrum-kerrigan.jskitty.cat:50003; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://kerrigan-bridge.jskitty.cat wss://electrum-kerrigan.jskitty.cat:50003 https://coordinator.jskitty.cat https://vote.kerrigan.network; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
     }
 }
 ```
@@ -152,7 +152,7 @@ server {
 
     add_header Cross-Origin-Opener-Policy "same-origin" always;
     add_header Cross-Origin-Embedder-Policy "require-corp" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://kerrigan-bridge.jskitty.cat wss://electrum-kerrigan.jskitty.cat:50003; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://kerrigan-bridge.jskitty.cat wss://electrum-kerrigan.jskitty.cat:50003 https://coordinator.jskitty.cat https://vote.kerrigan.network; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" always;
 
     location / {
         try_files $uri $uri/ /index.html;

@@ -173,7 +173,7 @@
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1;
-  margin-bottom: var(--space-lg);
+  margin-bottom: var(--space-xs);
   color: var(--text-bright);
 }
 
@@ -185,22 +185,59 @@
   letter-spacing: 0.02em;
 }
 
+/* USD-equivalent line under the KRGN total. Reserves vertical space via
+   min-height so the layout doesn't shift when the price arrives async. */
+.balance-usd {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  min-height: 17px;
+  margin-bottom: var(--space-lg);
+}
+
 .balance-breakdown {
   display: flex;
   justify-content: center;
   gap: var(--space-xl);
+  /* Anchor each pool column to its top so the columns stay baseline-
+     aligned regardless of which one has the "+ X maturing" pill. */
+  align-items: flex-start;
+  /* The maturing pill is `position: absolute` so it doesn't expand the
+     column width (which would push the eye icon away from the amount).
+     Reserve vertical space here so the absolute pill, when present,
+     doesn't overlap the action buttons below. ~28px = pill height +
+     6px gap. When no maturing balance, the empty space reads as
+     normal breathing room. */
+  padding-bottom: 28px;
 }
 
 .balance-pool {
   display: flex;
-  align-items: center;
+  /* Anchor the icon to the top of its inner stack so it stays at the
+     amount line. `center` would push the icon down halfway when the
+     column has the third (maturing) line. */
+  align-items: flex-start;
   gap: var(--space-sm);
   font-size: 14px;
+}
+/* The inner amount/label stack sits next to the icon. Mark it
+   `position: relative` so the maturing pill can absolute-position
+   itself underneath without the icon getting pushed left when the
+   pill (which is wider than "Transparent") would otherwise expand
+   the inner div's content-width. */
+.balance-pool > div {
+  position: relative;
 }
 
 .balance-pool-icon {
   width: 18px;
   height: 18px;
+  /* The amount text uses a 14px font; nudge the 18px icon down a hair
+     so its visual centre aligns with the amount's baseline rather than
+     sitting flush at the column's very top. */
+  margin-top: 2px;
 }
 
 .balance-pool-amount {
@@ -213,6 +250,40 @@
   font-size: 12px;
   color: var(--text-muted);
 }
+/* "+ X.XXX maturing" badge — sits underneath the transparent amount,
+   clickable to open the explainer modal. Absolute-positioned so its
+   width (typically wider than the "Transparent" label above it)
+   doesn't widen the parent stack and shove the eye-icon away from
+   the amount. The parent (`.balance-pool > div`) carries
+   `position: relative` to anchor this. */
+.balance-pool-maturing {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 7px;
+  border: 1px solid rgba(250, 204, 21, 0.28);
+  border-radius: 3px;
+  background: rgba(250, 204, 21, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: #FACC15;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.balance-pool-maturing:hover {
+  background: rgba(250, 204, 21, 0.14);
+  border-color: rgba(250, 204, 21, 0.45);
+}
+.balance-pool-maturing:active { transform: scale(0.97); }
+.balance-pool-maturing svg { opacity: 0.7; }
+.balance-pool-maturing:hover svg { opacity: 1; }
 
 /* Action buttons row */
 .actions-row {
@@ -383,6 +454,22 @@
 .tx-icon.shielded {
   background: var(--purple-glow);
   color: var(--purple-light);
+}
+
+/* Inference-protocol txs (0x01..0x06 OP_RETURN markers) get the cyan
+   accent from the AI tab so they're visually linked to where they came
+   from, without stealing the shielded purple or the generic sent red. */
+.tx-icon.inference {
+  background: rgba(94, 234, 212, 0.12);
+  color: #5EEAD4;
+}
+
+/* Masternode rewards (coinbase txs paying our address) — gold so they
+   read as "earnings" at a glance and don't blend in with regular
+   external receives. */
+.tx-icon.reward {
+  background: rgba(250, 204, 21, 0.12);
+  color: #FACC15;
 }
 
 .tx-details {

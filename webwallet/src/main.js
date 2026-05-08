@@ -12,8 +12,10 @@ import * as dashboard from './views/dashboard.js';
 import * as send from './views/send.js';
 import * as receive from './views/receive.js';
 import * as activity from './views/activity.js';
+import * as ai from './views/ai.js';
 import * as settings from './views/settings.js';
 import * as memo from './views/memo.js';
+import * as maturity from './views/maturity.js';
 
 async function boot() {
   // Show loading state
@@ -37,10 +39,12 @@ async function boot() {
   registerView('login', login.render);
   registerView('dashboard', dashboard.render);
   registerView('activity', activity.render);
+  registerView('ai', ai.render);
   registerView('settings', settings.render);
   registerView('modal:send', send.render);
   registerView('modal:receive', receive.render);
   registerView('modal:memo', memo.render);
+  registerView('modal:maturity', maturity.render);
 
   // Check if wallet exists
   const hasWallet = await storage.hasWallet();

@@ -3,10 +3,10 @@
 import { openModal, navigate } from '../router.js';
 import { prefill as prefillSend } from './send.js';
 import { setMemo } from './memo.js';
-import { store, subscribe, formatKRGN, formatKRGNShort, totalBalance } from '../state.js';
+import { store, subscribe, formatKRGN, formatKRGNShort, formatUsd, totalBalance, totalBalanceUsd } from '../state.js';
 import { icon } from '../components/icons.js';
-import { startShieldSync, scheduleShieldSync, refreshTransparentBalance, refreshTransparentHistory, refreshPendingTxs, loadPersistedState } from '../sync.js';
-import { appHeader, escapeHtml, classifyTx } from '../templates.js';
+import { startShieldSync, scheduleShieldSync, refreshTransparentBalance, refreshTransparentHistory, refreshPendingTxs, refreshTransparentState, loadPersistedState, startPriceSync } from '../sync.js';
+import { appHeader, orderedHistory, txRow } from '../templates.js';
 import * as net from '../network.js';
 
 let unsubs = [];
@@ -35,6 +35,7 @@ export function render() {
       // Action buttons
       document.getElementById('btn-send')?.addEventListener('click', () => openModal('send'));
       document.getElementById('btn-receive')?.addEventListener('click', () => openModal('receive'));
+      document.getElementById('balance-maturing-btn')?.addEventListener('click', () => openModal('maturity'));
       document.getElementById('shield-nudge-container')?.addEventListener('click', () => {
         if (Number(store.balance.transparent) <= 0) return;
         prefillSend(store.wallet.shieldedAddr, true);
@@ -57,6 +58,7 @@ export function render() {
       if (!dashboardBooted) {
         dashboardBooted = true;
         startShieldSync();
+        startPriceSync();
         initElectrumX();
       }
 
@@ -65,6 +67,7 @@ export function render() {
         subscribe('balance', () => { updateBalance(); updateShieldNudge(); }),
         subscribe('sync', updateSyncBar),
         subscribe('history', updateRecentTxs),
+        subscribe('price', updateBalance),
       );
 
       return () => {
@@ -78,21 +81,25 @@ export function render() {
 function initElectrumX() {
   if (store.sync.electrumConnected) {
     // Already connected (e.g. after resync) — just refresh immediately
-    refreshTransparentBalance();
-    refreshTransparentHistory();
-    refreshPendingTxs();
+    refreshTransparentState();
     return;
   }
   net.connectElectrumX({
     onConnect: () => {
       store.sync.electrumConnected = true;
-      refreshTransparentBalance();
-      refreshTransparentHistory();
-      refreshPendingTxs();
+      refreshTransparentState();
+      // Per-address subscription: fires on confirmed AND mempool events,
+      // so change outputs from a just-broadcast tx are visible as soon as
+      // ElectrumX relays them — essential for back-to-back AI inference
+      // TXs that spend each other's unconfirmed change.
+      const addr = store.wallet.transparentAddr;
+      if (addr) {
+        net.subscribeScripthash(addr, () => {
+          refreshTransparentState();
+        });
+      }
       net.subscribeHeaders(() => {
-        refreshTransparentBalance();
-        refreshTransparentHistory();
-        refreshPendingTxs();
+        refreshTransparentState();
         // Try shield sync at 3s (optimistic) and 10s (safe fallback)
         scheduleShieldSync(3000);
         scheduleShieldSync(10000);
@@ -109,7 +116,23 @@ function initElectrumX() {
 function renderBalanceCard() {
   const total = formatKRGN(totalBalance());
   const transparent = formatKRGN(store.balance.transparent);
+  const maturing = Number(store.balance.transparentMaturing) || 0;
+  const maturingStr = maturing > 0 ? formatKRGN(maturing) : '';
   const shielded = formatKRGN(store.balance.shielded);
+  const usdStr = renderUsdLine();
+
+  // Maturing line lives in the DOM either way; CSS `display:none` when
+  // there's nothing maturing keeps the markup stable for `updateBalance()`
+  // to flip between empty / populated without re-rendering the card.
+  const maturingLine =
+    `<button id="balance-maturing-btn" type="button" class="balance-pool-maturing"
+            ${maturing > 0 ? '' : 'style="display:none;"'}
+            aria-label="What does maturing mean?">
+      <span class="balance-pool-maturing-amt" id="balance-maturing">+ ${maturingStr || '0'} maturing</span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+      </svg>
+    </button>`;
 
   return `
     <div class="card balance-card" style="margin-bottom: var(--space-sm);">
@@ -117,12 +140,14 @@ function renderBalanceCard() {
       <div class="balance-total" id="balance-total">
         ${total}<span class="ticker">KRGN</span>
       </div>
+      <div class="balance-usd" id="balance-usd">${usdStr}</div>
       <div class="balance-breakdown">
         <div class="balance-pool">
           <span class="balance-pool-icon" style="color: var(--text-muted);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M2.42012 12.7132C2.28394 12.4975 2.21584 12.3897 2.17772 12.2234C2.14909 12.0985 2.14909 11.9015 2.17772 11.7766C2.21584 11.6103 2.28394 11.5025 2.42012 11.2868C3.54553 9.50484 6.8954 5 12.0004 5C17.1054 5 20.4553 9.50484 21.5807 11.2868C21.7169 11.5025 21.785 11.6103 21.8231 11.7766C21.8517 11.9015 21.8517 12.0985 21.8231 12.2234C21.785 12.3897 21.7169 12.4975 21.5807 12.7132C20.4553 14.4952 17.1054 19 12.0004 19C6.8954 19 3.54553 14.4952 2.42012 12.7132Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.0004 15C13.6573 15 15.0004 13.6569 15.0004 12C15.0004 10.3431 13.6573 9 12.0004 9C10.3435 9 9.0004 10.3431 9.0004 12C9.0004 13.6569 10.3435 15 12.0004 15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           <div>
             <div class="balance-pool-amount" id="balance-transparent">${transparent}</div>
             <div class="balance-pool-label">Transparent</div>
+            ${maturingLine}
           </div>
         </div>
         <div class="balance-pool">
@@ -140,10 +165,31 @@ function renderBalanceCard() {
 function updateBalance() {
   const totalEl = document.getElementById('balance-total');
   const transEl = document.getElementById('balance-transparent');
+  const matBtn = document.getElementById('balance-maturing-btn');
+  const matAmt = document.getElementById('balance-maturing');
   const shieldEl = document.getElementById('balance-shielded');
+  const usdEl = document.getElementById('balance-usd');
   if (totalEl) totalEl.innerHTML = `${formatKRGN(totalBalance())}<span class="ticker">KRGN</span>`;
   if (transEl) transEl.innerHTML = formatKRGN(store.balance.transparent);
+  if (matBtn) {
+    const maturing = Number(store.balance.transparentMaturing) || 0;
+    if (maturing > 0) {
+      matBtn.style.display = '';
+      if (matAmt) matAmt.innerHTML = `+ ${formatKRGN(maturing)} maturing`;
+    } else {
+      matBtn.style.display = 'none';
+    }
+  }
   if (shieldEl) shieldEl.innerHTML = formatKRGN(store.balance.shielded);
+  if (usdEl) usdEl.textContent = renderUsdLine();
+}
+
+/** USD line content. Empty string until the first price load resolves —
+ *  the .balance-usd container reserves vertical space via min-height so
+ *  the layout doesn't jump when the value populates. */
+function renderUsdLine() {
+  const usd = totalBalanceUsd();
+  return usd === null ? '' : `≈ ${formatUsd(usd)}`;
 }
 
 // ── Action Buttons ──
@@ -245,7 +291,11 @@ function updateSyncBar() {
 // ── Recent Activity ──
 
 function renderRecentTxs() {
-  const txs = store.history.slice(-5).reverse();
+  // Same shared ordering + row markup as the full Activity tab — see
+  // `orderedHistory` and `txRow` in templates.js. The dashboard just
+  // takes the top 5 of the same list, so the two views can never
+  // disagree on which entries exist or how they're sorted.
+  const txs = orderedHistory(store.history).slice(0, 5);
   if (txs.length === 0) {
     return `
       <div id="recent-activity-section" class="section">
@@ -260,7 +310,7 @@ function renderRecentTxs() {
     `;
   }
 
-  const rows = txs.map(tx => renderTxRow(tx)).join('');
+  const rows = txs.map((tx) => txRow(tx, formatKRGN)).join('');
   return `
     <div id="recent-activity-section" class="section">
       <div class="section-header">
@@ -308,30 +358,6 @@ function wireMemoClicks() {
   });
 }
 
-function renderTxRow(tx) {
-  const { isShielded, iconName, iconClass, label, amountStr, amountClass } = classifyTx(tx, formatKRGN);
-
-  return `
-    <div class="tx-row">
-      <div class="tx-icon ${iconClass}">
-        <span style="width: 18px; height: 18px; display: flex;">${icon(iconName)}</span>
-      </div>
-      <div class="tx-details">
-        <div class="tx-type">
-          ${label}
-          ${isShielded ? '<span class="badge badge-shielded" style="font-size: 10px; padding: 1px 6px;">Shielded</span>' : ''}
-        </div>
-        <div class="tx-meta">
-          ${tx.memo ? `<span class="tx-memo-click" data-memo="${escapeHtml(tx.memo)}">"${escapeHtml(tx.memo.slice(0, 30))}"</span>` : ''}
-          ${tx.confirmations > 0 ? `<span>${tx.confirmations} conf</span>` : '<span class="text-yellow">Pending</span>'}
-        </div>
-      </div>
-      <div class="tx-amount">
-        <div class="tx-amount-value ${amountClass}">${amountStr}</div>
-      </div>
-    </div>
-  `;
-}
 
 // ── Navigation ──
 
@@ -345,6 +371,10 @@ export function renderNav(active = 'dashboard') {
       <button class="nav-item ${active === 'activity' ? 'active' : ''}" data-nav="activity">
         <span class="nav-icon">${icon('activity')}</span>
         <span class="nav-label">Activity</span>
+      </button>
+      <button class="nav-item ${active === 'ai' ? 'active' : ''}" data-nav="ai">
+        <span class="nav-icon">${icon('brain')}</span>
+        <span class="nav-label">AI</span>
       </button>
       <button class="nav-item ${active === 'settings' ? 'active' : ''}" data-nav="settings">
         <span class="nav-icon">${icon('settings')}</span>

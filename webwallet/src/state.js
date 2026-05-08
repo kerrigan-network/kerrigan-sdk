@@ -54,9 +54,10 @@ export function initStore() {
       extsk: '',
     },
     balance: {
-      transparent: 0,       // satoshis
-      shielded: 0,          // satoshis
-      pending: 0,           // satoshis
+      transparent: 0,         // satoshis — total of all transparent UTXOs
+      transparentMaturing: 0, // satoshis — coinbase UTXOs not yet at depth 100
+      shielded: 0,            // satoshis
+      pending: 0,             // satoshis
     },
     sync: {
       shieldHeight: 0,
@@ -66,6 +67,10 @@ export function initStore() {
       electrumConnected: false,
     },
     history: [],             // { txid, type, amount, pool, confirmations, memo, timestamp, address }
+    price: {
+      usd: null,             // KRGN→USD spot from vote.kerrigan.network/api/price; null until first load
+      fetchedAt: 0,          // unix ms — 0 means never fetched in this session
+    },
     ui: {
       view: 'loading',      // loading | welcome | login | dashboard | activity | settings
       modal: null,          // null | 'send' | 'receive'
@@ -125,6 +130,31 @@ export function formatKRGNShort(sats) {
   if (val >= 1) return val.toFixed(2);
   if (val >= 0.01) return val.toFixed(4);
   return val.toFixed(8).replace(/0+$/, '');
+}
+
+/** USD value of the wallet's total balance (transparent + shielded), or null
+ *  if no price is loaded yet. Returns a Number in USD, not satoshis. */
+export function totalBalanceUsd() {
+  const usd = Number(state.price?.usd);
+  if (!usd || !isFinite(usd)) return null;
+  return (totalBalance() / 1e8) * usd;
+}
+
+/** Format a USD value for display. Always 2 decimals (cents). Positive
+ *  amounts that would round to $0.00 are rendered as ">$0.00" so a tiny
+ *  non-zero balance reads as "you have something" rather than "you have
+ *  nothing". Null / non-finite → ''. */
+export function formatUsd(value) {
+  const n = Number(value);
+  if (!isFinite(n)) return '';
+  const formatted = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+  if (n > 0 && formatted === '$0.00') return '>$0.00';
+  return formatted;
 }
 
 /** Plain-text format (no HTML) for non-DOM contexts like clipboard. */

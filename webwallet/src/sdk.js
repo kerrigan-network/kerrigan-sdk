@@ -112,16 +112,61 @@ export function validateAddress(address) {
  * Build and sign a transparent transaction.
  *
  * The SDK takes a literal amount — no sentinel values. For send-max,
- * compute `sum(utxos) - estimateTransparentFee(utxos.length, 1)` on the
- * caller side and pass the result.
+ * use `buildTransparentMaxTx` instead — the regular selector estimates
+ * fee with a change output and rejects amounts that fit a 1-out tx but
+ * not a 2-out tx.
  */
 export function buildTransparentTx(utxos, toAddress, amount, seed, account = 0, index = 0) {
   return JSON.parse(wasm.build_transparent_tx(utxos, toAddress, BigInt(amount), seed, account, index));
 }
 
+/**
+ * Build and sign a "send max" transparent transaction — entire balance,
+ * single output, no change. The fee is computed against the actual
+ * `(N inputs, 1 output)` shape and subtracted from the send amount.
+ * Returns `{ tx_hex, txid, fee, spent_utxos, amount }`.
+ */
+export function buildTransparentMaxTx(utxos, toAddress, seed, account = 0, index = 0) {
+  return JSON.parse(wasm.build_transparent_max_tx(utxos, toAddress, seed, account, index));
+}
+
 /** Estimate transparent tx fee in satoshis. */
 export function estimateTransparentFee(inputCount, outputCount) {
   return Number(wasm.estimate_transparent_fee(inputCount, outputCount));
+}
+
+/** Canonical `params_hash` (hex) over inference sampling parameters.
+ *  Must match whatever the drone computes — do NOT round values on the way in. */
+export function inferParamsHash(temperature, topP, seed, k) {
+  return wasm.infer_params_hash(temperature, topP, BigInt(seed), k);
+}
+
+/** Build + sign the 0x02 inference-payment TX.
+ *
+ *  `invoice` is the object returned by `network.requestInferenceInvoice`.
+ *  `params` is `{ temperature, topP, seed, k }` — must be the exact
+ *  same values the caller will eventually send in the chat request, or
+ *  the drone's payment-validation step rejects the TX.
+ *
+ *  Returns `{ tx_hex, txid, fee, spent_utxos }`.
+ */
+export function buildInferencePaymentTx(utxos, invoice, params, seed, account = 0, index = 0) {
+  const paramsHashHex = inferParamsHash(
+    params.temperature, params.topP, params.seed, params.k,
+  );
+  // Change address is always the same one that signs the inputs — pick 0.
+  const changeAddress = deriveAddress(seed, account, index);
+  return JSON.parse(wasm.build_inference_payment_tx(
+    utxos,
+    invoice.pay_to_address,
+    BigInt(invoice.amount_sat),
+    changeAddress,
+    invoice.drone_pubkey_hash,
+    invoice.model_hash,
+    invoice.max_tokens,
+    paramsHashHex,
+    seed, account, index,
+  ));
 }
 
 /** Estimate shield fee in satoshis (transparent → sapling). */

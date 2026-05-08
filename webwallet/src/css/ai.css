@@ -1,0 +1,1389 @@
+/* Kerrigan Wallet — AI / Inference chat
+ *
+ * Concept: broadcast console.
+ * Every AI chat on the web uses the same rounded-bubble + 3-bouncing-dot
+ * vocabulary. This one is a sci-fi comms terminal: chiselled message
+ * blocks, tracked-caps labels, waveform indicators, HUD corner ticks on
+ * the invoice card, a faint hex-grid in the backdrop. Purple stays the
+ * wallet's brand; a mint-cyan accent is scoped to this view so the
+ * moment you land on the AI tab it feels like a distinct *place*.
+ */
+
+.ai-view {
+  /* Local accent — mint-cyan, paired with Kerrigan's violet. Does NOT
+   * leak out of this view (scoped by the .ai-view wrapper), so other
+   * tabs stay purely purple. */
+  --cyan:         #5EEAD4;
+  --cyan-soft:    #99F6E4;
+  --cyan-glow:    rgba(94, 234, 212, 0.22);
+  --cyan-dim:     rgba(94, 234, 212, 0.10);
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Hard-constrain to the viewport so the messages pane actually scrolls
+   * internally (otherwise the whole page grows and overflow-y:auto has
+   * no bounded parent to work against). */
+  height: calc(100vh - var(--nav-height));
+  isolation: isolate;
+}
+
+/* Atmospheric backdrop — faint hex lattice + a dim radial purple wash.
+ * Pointer-events off, fixed behind everything in this view. */
+.ai-view::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse at 50% 0%, var(--purple-glow) 0%, transparent 55%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 56 64' opacity='0.35'><path d='M14 0 L42 0 L56 24 L42 48 L14 48 L0 24 Z M14 48 L0 72 M42 48 L56 72 M28 -8 L28 0' stroke='%237C3AED' stroke-width='0.6' fill='none' stroke-opacity='0.08'/></svg>");
+  background-size: auto, 56px 64px;
+  background-repeat: no-repeat, repeat;
+  pointer-events: none;
+}
+
+/* Entry cascade — header, messages, composer fade in in sequence. */
+.ai-view > .app-header,
+.ai-view > #ai-messages,
+.ai-view > .ai-composer {
+  opacity: 0;
+  animation: aiBootIn 520ms var(--ease-out) forwards;
+}
+.ai-view > .app-header   { animation-delay: 60ms;  }
+.ai-view > #ai-messages  { animation-delay: 140ms; }
+.ai-view > .ai-composer  { animation-delay: 220ms; }
+
+@keyframes aiBootIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Header right cluster ─────────────────────────────────────────────
+ *
+ * The AI tab uses the shared `appHeader` (Kerrigan logo on the left)
+ * with this compact cluster slotted as the right content — mirrors the
+ * dashboard's "Synced" status pattern so the two tabs feel consistent
+ * and we don't burn vertical space on a second header. */
+.ai-view .ai-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-view .ai-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background: rgba(94, 234, 212, 0.06);
+  border: 1px solid var(--cyan-dim);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--cyan-soft);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ai-view .ai-status-chip .live-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan-glow), 0 0 2px var(--cyan);
+  animation: aiLivePulse 1.8s ease-in-out infinite;
+}
+@keyframes aiLivePulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.25); }
+}
+.ai-view .ai-header-iconbtn {
+  width: 26px; height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease,
+              color var(--duration-fast) ease,
+              transform var(--duration-fast) var(--ease-spring);
+}
+.ai-view .ai-header-iconbtn:hover {
+  background: rgba(94, 234, 212, 0.06);
+  border-color: var(--cyan-dim);
+  color: var(--text-bright);
+}
+.ai-view .ai-header-iconbtn:active { transform: scale(0.94); }
+.ai-view .ai-header-iconbtn svg { width: 14px; height: 14px; }
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+
+.ai-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-3xl) var(--space-lg);
+  gap: 18px;
+  opacity: 0;
+  animation: aiBootIn 600ms var(--ease-out) 280ms forwards;
+}
+.ai-empty-sigil {
+  width: 72px; height: 72px;
+  color: var(--purple-light);
+  filter: drop-shadow(0 0 18px var(--purple-glow-strong));
+  animation: aiSigilSpin 28s linear infinite, aiSigilBreath 4s ease-in-out infinite;
+}
+/* "Discovering network…" pill that overlays the empty state during
+   the loading phase. Sits above the sigil so the hero visual stays
+   constant — the pill is the only thing that changes between
+   loading/standing-by, and only after a 200ms grace so fast loads
+   don't flash it at all. */
+.ai-empty-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: rgba(94, 234, 212, 0.08);
+  border: 1px solid var(--cyan-dim);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--cyan-soft);
+  text-transform: uppercase;
+  animation: aiBootIn 240ms var(--ease-out) both;
+}
+.ai-empty-pill-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan-glow), 0 0 2px var(--cyan);
+  animation: aiLivePulse 1.4s ease-in-out infinite;
+}
+.ai-empty-rail {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.ai-empty-rail::before,
+.ai-empty-rail::after {
+  content: '';
+  width: 36px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--text-muted));
+}
+.ai-empty-rail::after { background: linear-gradient(90deg, var(--text-muted), transparent); }
+.ai-empty-copy {
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-width: 340px;
+  font-weight: 300;
+}
+.ai-empty-copy em {
+  color: var(--cyan-soft);
+  font-style: normal;
+  font-weight: 400;
+}
+
+@keyframes aiSigilSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes aiSigilBreath {
+  0%, 100% { filter: drop-shadow(0 0 10px var(--purple-glow)); opacity: 0.75; }
+  50%      { filter: drop-shadow(0 0 26px var(--purple-glow-strong)); opacity: 1; }
+}
+
+/* ── Message stream ───────────────────────────────────────────────────── */
+
+.ai-messages {
+  flex: 1 1 0;
+  /* KEY: default min-height:auto prevents a flex child from shrinking
+   * below its content size, which breaks overflow-y:auto. Zero lets the
+   * container shrink + show the scrollbar.
+   * Same story for min-width — without it, any wide descendant (notably
+   * a markdown table) leaks its intrinsic width up through the flex
+   * chain and forces the whole chat column to scroll sideways. */
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px var(--space-md) 28px;
+  overflow-y: auto;
+  /* Contain horizontal overflow at the scroll-column level. The table
+   * wrapper inside a message bubble has its own `overflow-x: auto`, so
+   * tables still scroll independently; anything that somehow exceeds
+   * the bubble's max-width gets clipped here rather than expanding the
+   * whole chat view. */
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  /* Bottom fade — a 22px mask that tapers content into the void so it
+   * reads as "there's more below". Mirrors on top so the first message
+   * doesn't hard-cut against the header line either. */
+  -webkit-mask-image: linear-gradient(180deg,
+    transparent 0,
+    black 14px,
+    black calc(100% - 18px),
+    transparent 100%);
+  mask-image: linear-gradient(180deg,
+    transparent 0,
+    black 14px,
+    black calc(100% - 18px),
+    transparent 100%);
+}
+
+/* Thin webkit scrollbar — purple-tinted to match the rest of the UI. */
+.ai-messages::-webkit-scrollbar { width: 6px; }
+.ai-messages::-webkit-scrollbar-track { background: transparent; }
+.ai-messages::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+.ai-messages::-webkit-scrollbar-thumb:hover {
+  background: var(--purple-light);
+}
+
+.ai-msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 88%;
+  /* Flex items default to `min-width: auto`, meaning they can't shrink
+   * below their content's intrinsic size. That breaks tables: the
+   * table's natural width propagates up through .ai-msg-body → .ai-msg
+   * and stretches the whole message column (which then scrolls the
+   * entire chat horizontally). Forcing a 0 min-width lets the bubble
+   * collapse to its `max-width: 88%` cap, and the table wrapper's
+   * `overflow-x: auto` takes care of scrolling inside it. */
+  min-width: 0;
+  gap: 5px;
+  animation: aiBubbleIn 360ms var(--ease-out) both;
+}
+.ai-msg-user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.ai-msg-assistant {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.ai-msg-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+.ai-msg-user .ai-msg-tag      { color: var(--purple-light); }
+.ai-msg-assistant .ai-msg-tag { color: var(--cyan-soft); }
+
+.ai-msg-body {
+  position: relative;
+  padding: 11px 15px;
+  font-size: 14px;
+  line-height: 1.58;
+  font-weight: 400;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 2px;
+  /* Same reasoning as `.ai-msg { min-width: 0 }` — the bubble itself
+   * needs to be shrinkable so that `max-width: 100%` on the table
+   * wrapper resolves to the bubble's actual width, not the table's
+   * intrinsic content width. */
+  min-width: 0;
+}
+/* Assistant (markdown) bubbles render real block elements — do NOT
+ * preserve whitespace between them, otherwise the indented HTML
+ * template's newlines become visible gaps around <details>, <p>, etc. */
+.ai-msg-body.md { white-space: normal; }
+.ai-msg-body.md .ai-think,
+.ai-msg-body.md .ai-think * { white-space: normal; }
+/* USER — right-aligned, violet wash, full-height purple accent rail
+ * on the right edge (the speaker side). */
+.ai-msg-user .ai-msg-body {
+  background:
+    linear-gradient(135deg, rgba(167,139,250,0.12), rgba(124,58,237,0.08) 60%, transparent),
+    var(--bg-card);
+  border: 1px solid var(--border-strong);
+  color: var(--text-bright);
+}
+.ai-msg-user .ai-msg-body::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 2px;
+  background: linear-gradient(180deg,
+    transparent 0%,
+    var(--purple-light) 18%,
+    var(--purple-light) 82%,
+    transparent 100%);
+  box-shadow: 0 0 6px var(--purple-glow-strong);
+}
+/* ASSISTANT — left-aligned, cyan wash (mirrors the user side's violet),
+ * full-height cyan accent rail on the left edge. Top 1px is a cyan
+ * line that sweeps once on entry (scanline wipe feel). */
+.ai-msg-assistant .ai-msg-body {
+  background:
+    linear-gradient(225deg, rgba(94,234,212,0.10), rgba(94,234,212,0.04) 60%, transparent),
+    var(--bg-card);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+.ai-msg-assistant .ai-msg-body::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 2px;
+  background: linear-gradient(180deg,
+    transparent 0%,
+    var(--cyan) 18%,
+    var(--cyan) 82%,
+    transparent 100%);
+  box-shadow: 0 0 6px var(--cyan-glow);
+}
+/* Top scanline — sweeps once when the bubble appears. */
+.ai-msg-assistant .ai-msg-body::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  height: 1px;
+  width: 0;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan-glow);
+  animation: aiScanSweep 700ms var(--ease-out) 80ms forwards;
+}
+
+@keyframes aiBubbleIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes aiScanSweep {
+  from { width: 0;    opacity: 1; }
+  to   { width: 100%; opacity: 0; }
+}
+
+/* ── Markdown inside assistant bubbles ───────────────────────────────── */
+
+.ai-msg-body.md { padding: 12px 16px; }
+.ai-msg-body.md > *:first-child { margin-top: 0; }
+.ai-msg-body.md > *:last-child  { margin-bottom: 0; }
+
+.ai-msg-body.md p                { margin: 0 0 10px; }
+.ai-msg-body.md p:last-child     { margin-bottom: 0; }
+
+.ai-msg-body.md h1,
+.ai-msg-body.md h2,
+.ai-msg-body.md h3 {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-bright);
+  margin: 14px 0 6px;
+  line-height: 1.3;
+}
+.ai-msg-body.md h1 { font-size: 17px; }
+.ai-msg-body.md h2 { font-size: 15px; }
+.ai-msg-body.md h3 { font-size: 13px; letter-spacing: 0.04em; }
+
+.ai-msg-body.md strong { color: var(--text-bright); font-weight: 600; }
+.ai-msg-body.md em     { color: var(--text-primary); font-style: italic; }
+
+.ai-msg-body.md a {
+  color: var(--cyan-soft);
+  text-decoration: underline;
+  text-decoration-color: rgba(94, 234, 212, 0.3);
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--duration-fast) ease;
+}
+.ai-msg-body.md a:hover { text-decoration-color: var(--cyan); }
+
+.ai-msg-body.md ul,
+.ai-msg-body.md ol {
+  margin: 4px 0 10px;
+  padding-left: 22px;
+}
+.ai-msg-body.md li { margin: 3px 0; }
+.ai-msg-body.md ul li::marker { color: var(--purple-light); }
+.ai-msg-body.md ol li::marker {
+  color: var(--cyan-soft);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.ai-msg-body.md code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 1px 6px;
+  background: rgba(124, 58, 237, 0.12);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  color: var(--cyan-soft);
+}
+.ai-msg-body.md pre.md-pre {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border-default);
+  border-left: 2px solid var(--cyan);
+  border-radius: 2px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.ai-msg-body.md pre.md-pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: inherit;
+}
+.ai-msg-body.md pre.md-pre::-webkit-scrollbar { height: 5px; }
+.ai-msg-body.md pre.md-pre::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+
+/* GFM tables. Broadcast-console palette: cyan-tinted header row, subtle
+   purple zebra on body rows, monospaced digits so numeric columns align
+   without having to measure.
+   Scroll strategy: the outer `.md-table-wrap` owns horizontal overflow
+   (max-width: 100% + overflow-x: auto) so the table keeps its natural
+   cell widths on narrow screens and the WRAPPER scrolls sideways —
+   rather than the table itself being squeezed to fit. */
+.ai-msg-body.md .md-table-wrap {
+  /* Three properties together make this work:
+   *   1. `width: 100%`: wrapper fills the bubble's resolved width
+   *      rather than shrink-wrapping its contents.
+   *   2. `overflow-x: auto`: scroll when the table exceeds that width.
+   *   3. `contain: inline-size`: isolates the wrapper's horizontal
+   *      intrinsic sizing from its children. Without this, the
+   *      table's `max-content` width bubbles up through the bubble →
+   *      .ai-msg → .ai-messages and forces the whole chat column
+   *      wider than the viewport (regardless of clamps and min-widths
+   *      above). With it, the wrapper's intrinsic width is decoupled
+   *      from the table, so the bubble sizes normally and the table
+   *      overflows inside the fixed-width wrapper. */
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  contain: inline-size;
+  margin: 10px 0;
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+}
+.ai-msg-body.md .md-table-wrap::-webkit-scrollbar { height: 6px; }
+.ai-msg-body.md .md-table-wrap::-webkit-scrollbar-track {
+  background: rgba(11,11,20,0.6);
+}
+.ai-msg-body.md .md-table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(94,234,212,0.35);
+  border-radius: var(--radius-full);
+}
+.ai-msg-body.md .md-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(94,234,212,0.6);
+}
+
+.ai-msg-body.md .md-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  /* Let columns size to content, then grow to fill the wrapper when the
+     table is narrower than the bubble. `min-width: 100%` pins it flush
+     on wide screens; `width: max-content` gives it natural cell widths
+     on narrow screens so the wrapper can scroll instead of crushing. */
+  min-width: 100%;
+  width: max-content;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.ai-msg-body.md .md-table thead {
+  background: linear-gradient(180deg, rgba(94,234,212,0.12), rgba(94,234,212,0.03));
+  color: var(--text-bright);
+}
+.ai-msg-body.md .md-table th {
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 10px;
+  color: var(--cyan);
+  border-bottom: 1px solid rgba(94,234,212,0.35);
+  white-space: nowrap;
+}
+.ai-msg-body.md .md-table td {
+  padding: 6px 10px;
+  color: var(--text-primary);
+  border-top: 1px solid var(--border-subtle);
+  vertical-align: top;
+  /* Cell contents stay on one line so the wrapper scrolls horizontally
+     rather than each column being squeezed into a tall wrap. If a cell
+     genuinely needs soft wrap, the model can insert a <br> — we won't
+     force wrap at cell boundaries. */
+  white-space: nowrap;
+}
+.ai-msg-body.md .md-table tbody tr:first-child td { border-top: none; }
+.ai-msg-body.md .md-table tbody tr:nth-child(even) td {
+  background: rgba(124,58,237,0.05);
+}
+.ai-msg-body.md .md-table tbody tr:hover td {
+  background: rgba(94,234,212,0.05);
+}
+
+/* ── Thought-process block ──────────────────────────────────────────── */
+
+.ai-think {
+  display: block;
+  margin: 0 0 6px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 3px;
+  background: rgba(11, 11, 20, 0.5);
+  transition: border-color var(--duration-normal) var(--ease-out),
+              background var(--duration-normal) var(--ease-out);
+}
+.ai-think:last-child { margin-bottom: 0; }
+/* Pull the following paragraph tighter against the collapsed chip. */
+.ai-think + p,
+.ai-think + h1,
+.ai-think + h2,
+.ai-think + h3,
+.ai-think + ul,
+.ai-think + ol { margin-top: 2px; }
+.ai-think[open] {
+  border-color: var(--border-default);
+  background: var(--bg-deep);
+}
+.ai-think summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  transition: color var(--duration-fast) ease;
+}
+.ai-think summary::-webkit-details-marker { display: none; }
+.ai-think summary:hover { color: var(--text-secondary); }
+.ai-think[open] summary { color: var(--text-secondary); }
+
+.ai-think-icon {
+  display: inline-flex;
+  width: 11px; height: 11px;
+  color: var(--text-muted);
+}
+.ai-think-label { flex: 1; }
+.ai-think-chev {
+  display: inline-flex;
+  width: 11px; height: 11px;
+  color: var(--text-muted);
+  transition: transform var(--duration-normal) var(--ease-spring);
+}
+.ai-think[open] .ai-think-chev { transform: rotate(90deg); }
+
+.ai-think-body {
+  padding: 6px 12px 8px;
+  border-top: 1px dashed var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.55;
+  font-family: var(--font-display);
+  font-weight: 300;
+}
+.ai-think-body > *:first-child { margin-top: 0; }
+.ai-think-body > *:last-child  { margin-bottom: 0; }
+.ai-think-body p               { margin: 0 0 6px; }
+.ai-think-body code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 0 4px;
+  background: rgba(124, 58, 237, 0.08);
+  border-radius: 2px;
+  color: var(--cyan-soft);
+}
+
+/* System line — centered capsule rule. */
+.ai-sys {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  animation: aiBubbleIn 280ms var(--ease-out) both;
+}
+.ai-sys::before,
+.ai-sys::after {
+  content: '';
+  width: 28px;
+  height: 1px;
+  background: var(--border-default);
+}
+
+/* ── Waveform thinking indicator ─────────────────────────────────────── */
+
+.ai-wave {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  animation: aiBubbleIn 260ms var(--ease-out) both;
+}
+.ai-wave .bar {
+  width: 3px;
+  background: var(--cyan);
+  border-radius: 1px;
+  box-shadow: 0 0 6px var(--cyan-glow);
+  animation: aiBarPulse 1.1s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+.ai-wave .bar:nth-child(1) { height: 8px;  animation-delay: 0.00s; }
+.ai-wave .bar:nth-child(2) { height: 14px; animation-delay: 0.08s; }
+.ai-wave .bar:nth-child(3) { height: 20px; animation-delay: 0.16s; }
+.ai-wave .bar:nth-child(4) { height: 14px; animation-delay: 0.24s; }
+.ai-wave .bar:nth-child(5) { height: 8px;  animation-delay: 0.32s; }
+
+@keyframes aiBarPulse {
+  0%, 100% { transform: scaleY(0.35); opacity: 0.55; }
+  50%      { transform: scaleY(1);    opacity: 1; }
+}
+
+/* Live status text next to the waveform — "queued · N ahead · ~Xs"
+   while waiting, "generating · Xs elapsed" once our turn starts. The
+   text is updated in place every second by a small timer so the user
+   sees something tick rather than an opaque spinner. */
+.ai-wave-status {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+  align-self: center;
+  white-space: nowrap;
+}
+
+/* ── Paid notice ──────────────────────────────────────────────────────── */
+
+.ai-paid {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  background: var(--green-dim);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--green);
+  animation: aiPaidIn 380ms var(--ease-spring) both;
+}
+.ai-paid svg { width: 12px; height: 12px; }
+.ai-paid .amt  { color: var(--text-bright); font-weight: 500; letter-spacing: 0.08em; }
+.ai-paid .txid { color: var(--text-muted); letter-spacing: 0.05em; }
+
+@keyframes aiPaidIn {
+  from { opacity: 0; transform: scale(0.92) translateY(4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ── Neural Contract (invoice) ────────────────────────────────────────── */
+
+.ai-invoice-slot {
+  padding: 0 var(--space-md);
+  /* Live above the sticky composer (which carries a backdrop-filter that
+   * makes it its own stacking context, otherwise the contract buttons
+   * render *underneath* the composer and can't be clicked). */
+  position: relative;
+  z-index: 5;
+}
+
+.ai-contract {
+  position: relative;
+  margin: var(--space-sm) 0 4px;
+  padding: 20px 18px 16px;
+  background:
+    linear-gradient(180deg, rgba(22,22,42,0.75), rgba(11,11,20,0.92));
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  box-shadow: 0 0 40px var(--purple-glow), 0 2px 16px rgba(0,0,0,0.4);
+  animation: aiContractIn 380ms var(--ease-spring) both;
+}
+/* HUD corner ticks — four L-shapes in the corners. */
+.ai-contract::before,
+.ai-contract::after,
+.ai-contract-corners::before,
+.ai-contract-corners::after {
+  content: '';
+  position: absolute;
+  width: 10px; height: 10px;
+  border: 1px solid var(--cyan);
+  box-shadow: 0 0 6px var(--cyan-glow);
+}
+.ai-contract::before           { top: -1px; left: -1px;  border-right: none; border-bottom: none; }
+.ai-contract::after            { top: -1px; right: -1px; border-left: none;  border-bottom: none; }
+.ai-contract-corners::before   { bottom: -1px; left: -1px;  border-right: none; border-top: none; }
+.ai-contract-corners::after    { bottom: -1px; right: -1px; border-left: none;  border-top: none; }
+
+/* Cyan line that sweeps across the top when contract appears. */
+.ai-contract-sweep {
+  position: absolute;
+  top: 0; left: 10px; right: 10px;
+  height: 1px;
+  background: var(--cyan);
+  box-shadow: 0 0 6px var(--cyan-glow);
+  transform-origin: left center;
+  animation: aiSweepIn 540ms var(--ease-out) 120ms both;
+}
+@keyframes aiSweepIn {
+  from { transform: scaleX(0); opacity: 1; }
+  to   { transform: scaleX(1); opacity: 0; }
+}
+
+.ai-contract-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.ai-contract-header-icon {
+  width: 14px; height: 14px;
+  color: var(--cyan);
+  filter: drop-shadow(0 0 4px var(--cyan-glow));
+}
+.ai-contract-header-label {
+  font-family: var(--font-brand);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+.ai-contract-header-dim {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ai-contract-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 18px;
+  font-size: 13px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--border-subtle);
+  margin-bottom: 14px;
+}
+.ai-contract-rows .k {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  align-self: center;
+}
+.ai-contract-rows .v {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+.ai-contract-rows .v.dim { color: var(--text-secondary); }
+
+/* Big total block at the bottom. */
+.ai-contract-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ai-contract-total-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ai-contract-total-amt {
+  font-family: var(--font-brand);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-bright);
+  text-shadow: 0 0 18px var(--purple-glow-strong);
+}
+.ai-contract-total-sat {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+
+.ai-contract-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.ai-contract-btn {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-primary);
+  padding: 10px 12px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--duration-normal) var(--ease-out),
+              color var(--duration-normal) var(--ease-out),
+              border-color var(--duration-normal) var(--ease-out),
+              box-shadow var(--duration-normal) var(--ease-out),
+              transform var(--duration-fast) var(--ease-spring);
+}
+.ai-contract-btn:hover  { transform: translateY(-1px); }
+.ai-contract-btn:active { transform: translateY(0) scale(0.99); }
+.ai-contract-btn.primary {
+  border-color: var(--purple-light);
+  background: linear-gradient(180deg, rgba(124,58,237,0.25), rgba(124,58,237,0.08));
+  color: var(--text-bright);
+  box-shadow: 0 0 14px var(--purple-glow);
+}
+.ai-contract-btn.primary:hover {
+  box-shadow: 0 0 22px var(--purple-glow-strong);
+  border-color: var(--text-bright);
+}
+.ai-contract-btn.secondary {
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+.ai-contract-btn.secondary:hover {
+  color: var(--red);
+  border-color: rgba(239,68,68,0.35);
+}
+
+@keyframes aiContractIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Composer ─────────────────────────────────────────────────────────── */
+
+.ai-composer {
+  /* Not sticky anymore — .ai-view is a bounded flex column now, so the
+   * composer is naturally the last flex item sitting at the bottom,
+   * with the messages pane scrolling above it. Sticky + a constrained
+   * parent was letting the composer overlap the message area. */
+  flex: 0 0 auto;
+  margin: var(--space-sm) var(--space-md) var(--space-md);
+  padding: 9px 9px 9px 14px;
+  background: linear-gradient(180deg, rgba(22,22,42,0.82), rgba(11,11,20,0.94));
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  box-shadow: var(--shadow-card), 0 12px 40px rgba(0,0,0,0.45);
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  transition: border-color var(--duration-normal) var(--ease-out),
+              box-shadow var(--duration-normal) var(--ease-out);
+}
+/* Thin cyan rail across the top of the composer — dim by default,
+ * brightens on focus like a radio keying up. */
+.ai-composer::before {
+  content: '';
+  position: absolute;
+  top: -1px; left: 10px; right: 10px;
+  height: 1px;
+  background: var(--cyan);
+  opacity: 0.35;
+  box-shadow: 0 0 4px var(--cyan-glow);
+  transition: opacity var(--duration-normal) var(--ease-out),
+              box-shadow var(--duration-normal) var(--ease-out);
+}
+.ai-composer:focus-within {
+  border-color: var(--purple);
+  box-shadow: var(--shadow-glow-strong), 0 12px 40px rgba(0,0,0,0.5);
+}
+.ai-composer:focus-within::before {
+  opacity: 1;
+  box-shadow: 0 0 10px var(--cyan-glow), 0 0 2px var(--cyan);
+}
+
+.ai-prompt {
+  flex: 1;
+  resize: none;
+  min-height: 34px;
+  max-height: 160px;
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+}
+.ai-prompt::placeholder {
+  color: var(--text-muted);
+  font-weight: 300;
+  letter-spacing: 0.05em;
+}
+
+.ai-send-btn {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgba(124,58,237,0.3), rgba(91,33,182,0.1));
+  color: var(--text-bright);
+  cursor: pointer;
+  box-shadow: 0 0 16px var(--purple-glow);
+  transition: transform var(--duration-fast) var(--ease-spring),
+              box-shadow var(--duration-normal) var(--ease-out),
+              border-color var(--duration-normal) var(--ease-out),
+              opacity var(--duration-fast) ease;
+}
+.ai-send-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--purple-light);
+  box-shadow: 0 0 26px var(--purple-glow-strong);
+}
+.ai-send-btn:active:not(:disabled) { transform: scale(0.95); }
+.ai-send-btn:disabled { opacity: 0.35; cursor: default; }
+.ai-send-btn svg { width: 16px; height: 16px; }
+
+/* ── Inference settings overlay ────────────────────────────────────────
+   Right-side slide-in drawer. Scoped to the AI tab — backdrop dims the
+   chat but the wallet chrome + nav stay interactive underneath so users
+   can bail to another tab without dismissing first. */
+.ai-settings-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 3, 10, 0);
+  /* Above the bottom navbar (z-index: 100) — while the settings drawer
+   * is open it fully takes over the right edge, including covering the
+   * navbar, so the interaction reads as "modal" until dismissed. */
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: background var(--duration-normal) var(--ease-out),
+              opacity var(--duration-normal) var(--ease-out);
+}
+.ai-settings-backdrop.open {
+  background: rgba(3, 3, 10, 0.55);
+  opacity: 1;
+  pointer-events: auto;
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.ai-settings-panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(380px, 92vw);
+  /* Above the navbar (z-index: 100) + above the backdrop (200), so
+   * while the drawer is open it fully owns the right edge of the
+   * viewport — the navbar is hidden under the backdrop dim, and the
+   * drawer itself covers the right-side slice. Dismiss to reveal the
+   * navbar again. */
+  z-index: 201;
+  background: linear-gradient(180deg, rgba(18,18,36,0.97), rgba(10,10,22,0.99));
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -12px 0 40px rgba(0,0,0,0.55);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  transform: translateX(100%);
+  opacity: 0;
+  transition: transform var(--duration-normal) var(--ease-out),
+              opacity var(--duration-normal) var(--ease-out);
+  /* Plain block scroll container. The sticky header keeps the title +
+   * close button pinned while the sections scroll under it. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Keep the header pinned while the sections below scroll. */
+.ai-settings-panel > .ai-settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(18,18,36,0.98), rgba(18,18,36,0.94));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+/* Thin cyan rail scrollbar, scoped to the panel. */
+.ai-settings-panel::-webkit-scrollbar { width: 5px; }
+.ai-settings-panel::-webkit-scrollbar-track { background: transparent; }
+.ai-settings-panel::-webkit-scrollbar-thumb {
+  background: rgba(94, 234, 212, 0.30);
+  border-radius: var(--radius-full);
+}
+.ai-settings-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(94, 234, 212, 0.55);
+}
+.ai-settings-panel.open { transform: translateX(0); opacity: 1; }
+
+/* Cyan rail along the left edge — mirrors the composer's top rail so the
+ * panel reads as "part of" the AI tab rather than a generic modal. */
+.ai-settings-panel::before {
+  content: '';
+  position: absolute;
+  top: 12px; bottom: 12px;
+  left: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--cyan) 20%, var(--cyan) 80%, transparent);
+  box-shadow: 0 0 10px var(--cyan-glow);
+  opacity: 0.9;
+}
+
+.ai-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--border-default);
+}
+.ai-settings-title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-bright);
+}
+.ai-settings-close {
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease,
+              color var(--duration-fast) ease;
+}
+.ai-settings-close:hover {
+  background: rgba(94,234,212,0.08);
+  border-color: var(--cyan-dim);
+  color: var(--text-bright);
+}
+
+.ai-settings-section {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border-default);
+}
+.ai-settings-section:last-child { border-bottom: none; }
+
+.ai-settings-h {
+  margin: 0 0 6px 0;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+.ai-settings-desc {
+  margin: 0 0 14px 0;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+}
+.ai-settings-desc strong {
+  color: var(--text-bright);
+  font-weight: 500;
+}
+
+.ai-settings-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-settings-option {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  background: rgba(17,17,30,0.5);
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--duration-fast) ease,
+              border-color var(--duration-fast) ease,
+              transform var(--duration-fast) var(--ease-spring);
+}
+.ai-settings-option:hover { border-color: var(--cyan-dim); }
+.ai-settings-option:active { transform: scale(0.99); }
+.ai-settings-option.selected {
+  background: linear-gradient(180deg, rgba(94,234,212,0.10), rgba(94,234,212,0.02));
+  border-color: var(--cyan);
+  box-shadow: inset 0 0 0 1px rgba(94,234,212,0.18),
+              0 0 12px rgba(94,234,212,0.18);
+}
+.ai-settings-option-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ai-settings-option-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-bright);
+}
+.ai-settings-option-tokens {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--cyan);
+  letter-spacing: 0.04em;
+}
+.ai-settings-option:not(.selected) .ai-settings-option-tokens { color: var(--text-secondary); }
+.ai-settings-option-hint {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ai-settings-option-desc {
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 300;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* On/off indicator for the auto-approve toggle. Slots into the
+   existing .ai-settings-option chrome where tier/model entries put
+   their token-count or context badge — same right-aligned pill, but
+   colour-flipped between accent (on) and muted (off) instead of
+   meaning a numeric value. */
+.ai-settings-toggle-state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 2px;
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+  background: rgba(17,17,30,0.6);
+  transition: color var(--duration-fast) ease,
+              border-color var(--duration-fast) ease,
+              background var(--duration-fast) ease;
+}
+.ai-settings-toggle.selected .ai-settings-toggle-state {
+  color: var(--cyan);
+  border-color: var(--cyan);
+  background: rgba(94,234,212,0.12);
+}
+
+/* ── Context-trim cutoff marker + dropped-message treatment ───────────
+   When the client trims older messages before send, the dropped ones
+   stay visible (so users see their own history) but fade back, and a
+   hairline separator marks the edge. */
+.ai-cutoff {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ai-cutoff::before,
+.ai-cutoff::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-default) 25%, var(--border-default) 75%, transparent);
+}
+.ai-cutoff-mark {
+  color: var(--purple-light);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+.ai-cutoff-text { white-space: nowrap; }
+
+.ai-msg-dropped {
+  opacity: 0.42;
+  filter: saturate(0.7);
+  transition: opacity var(--duration-normal) var(--ease-out),
+              filter var(--duration-normal) var(--ease-out);
+}
+.ai-msg-dropped:hover { opacity: 0.72; filter: saturate(1); }
+
+/* ── Invoice card: cache-savings line + rotated banner ────────────────── */
+.ai-contract-dim { color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+
+.ai-contract-rotated {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  margin-bottom: 10px;
+  background: linear-gradient(90deg, rgba(124,58,237,0.14), rgba(124,58,237,0.02));
+  border: 1px solid rgba(124,58,237,0.35);
+  border-radius: 2px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.ai-contract-rotated svg { width: 12px; height: 12px; color: var(--purple-light); }
+
+/* ── Streaming assistant message ────────────────────────────────────── */
+/*
+ * The streaming bubble renders into the EXACT same skeleton a finalized
+ * one does (`<details class="ai-think">` for thought blocks, plain
+ * body, model-name tag). The only structural marker is the modifier
+ * class `ai-think-streaming` on the currently-open think block. CSS
+ * uses that class to clip the body to a ~3-line scrolling pane with a
+ * top-fade mask; JS bottom-anchors scrollTop on each token. When
+ * `</think>` closes, the modifier is dropped on the next tick and the
+ * details element transitions into a normal collapsed thought block —
+ * same DOM node, no layout swap.
+ *
+ * Body text during streaming is plain (escaped) text in `.ai-streaming-body`
+ * so a half-typed code fence doesn't break layout. `finalizeStream()`
+ * swaps the message kind, after which the standard `renderAssistantContent`
+ * path renders the body through markdown.
+ */
+.ai-msg-streaming .ai-msg-body { white-space: normal; }
+
+/* Visible answer text — plain pre-wrap span during stream, swapped to
+ * markdown via `renderAssistantContent` once the stream closes. */
+.ai-streaming-body {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Typing block until the first token arrives. */
+.ai-streaming-cursor {
+  display: inline-block;
+  font-family: var(--font-mono);
+  color: var(--cyan);
+  animation: ai-streaming-blink 1.2s steps(2, start) infinite;
+}
+@keyframes ai-streaming-blink { to { opacity: 0; } }
+
+/* Live thought block. Same `<details class="ai-think">` shape a closed
+ * thought renders with — the modifier class flips two things while the
+ * stream is in flight:
+ *   1. Body height clipped to ~3 lines + top-fade mask (the "scrolling
+ *      preview" effect; latest text is bottom-anchored via JS
+ *      scrollTop = scrollHeight on every token).
+ *   2. Subtle cyan pulse on the brain icon + an adjusted summary label
+ *      so users know it's mid-generation, not complete.
+ *
+ * The inner <pre> uses monospace so token boundaries are visually
+ * stable — a sans-serif clip would jitter as the line wrapping
+ * changes between every token. After </think> lands the modifier
+ * class is dropped and the same details element becomes the standard
+ * collapsed thought block — no DOM swap, no layout shift. */
+.ai-think.ai-think-streaming {
+  border-color: var(--cyan);
+  background: rgba(11, 11, 20, 0.5);
+}
+.ai-think.ai-think-streaming summary {
+  color: var(--cyan);
+  pointer-events: none; /* don't let the user collapse mid-stream */
+}
+.ai-think.ai-think-streaming summary .ai-think-icon {
+  color: var(--cyan);
+  animation: ai-streaming-pulse 2s ease-in-out infinite;
+}
+.ai-think.ai-think-streaming summary .ai-think-chev {
+  display: none; /* details is forced-open during stream; chevron is misleading */
+}
+@keyframes ai-streaming-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+/* Body of a streaming think — clipped 3-line preview that scrolls
+ * bottom-anchored as new tokens land. The mask creates the
+ * scrolling-up illusion (older lines fade out the top edge). */
+.ai-think.ai-think-streaming .ai-think-body {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.ai-streaming-thought-content {
+  margin: 0;
+  padding: 8px 12px;
+  height: 4.2em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 35%, black 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 35%, black 100%);
+}
