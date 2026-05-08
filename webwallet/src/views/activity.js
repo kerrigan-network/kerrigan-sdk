@@ -1,15 +1,53 @@
-/** Activity page — full transaction history. */
+/** Activity page — full transaction history.
+ *
+ *  Two perf invariants this view depends on for wallets with thousands of
+ *  transactions (otherwise: tab freezes, multi-GB RAM):
+ *
+ *  1. **Paged DOM.** Only `PAGE_SIZE` rows are rendered at a time; "Show
+ *     more" appends another page. Without this, a 50k-tx wallet renders
+ *     ~30 MB of HTML in one shot — hundreds of thousands of DOM nodes
+ *     plus the browser's layout/render-tree overhead easily costs several
+ *     gigabytes of RAM.
+ *
+ *  2. **Coalesced re-renders.** The `subscribe('history', …)` callback
+ *     fires on every state mutation, and `loadPersistedState` pushes N
+ *     entries one at a time during boot — that's N rapid-fire re-renders
+ *     of the entire list, ~O(N²) work that freezes the tab before the
+ *     load even completes. Debounced via `requestAnimationFrame` so any
+ *     burst of history mutations collapses to one render per frame.
+ */
 
 import { store, subscribe, formatKRGN } from '../state.js';
 import { icon } from '../components/icons.js';
-import { escapeHtml, classifyTx } from '../templates.js';
+import { orderedHistory, txRow } from '../templates.js';
 import { openModal } from '../router.js';
 import { setMemo } from './memo.js';
 import { renderNav, mountNav } from './dashboard.js';
 
 let unsubs = [];
 
+/** How many tx rows to render per page. ~120-200 keeps the DOM well
+ *  inside what the browser can lay out + paint without hitches even on
+ *  modest hardware, while showing "enough" recent activity that most
+ *  users never click "Show more". Tuneable. */
+const PAGE_SIZE = 150;
+
+/** Number of pages currently rendered. Resets to 1 on filter change /
+ *  view re-mount. The visible row count is `pagesShown * PAGE_SIZE`. */
+let pagesShown = 1;
+
+/** Cached ordered+filtered history for the current view session. Built
+ *  lazily by `getOrderedFiltered()` and reused across "Show more" clicks
+ *  + history-mutation re-renders within the same frame. Invalidated on
+ *  filter change OR when subscribe fires (history actually mutated). */
+let orderedCache = null;
+
 export function render() {
+  // Reset paging on every view mount so re-entering Activity always
+  // starts you at the top.
+  pagesShown = 1;
+  orderedCache = null;
+
   return {
     html: `
       <div class="wallet-shell">
@@ -19,7 +57,7 @@ export function render() {
           </div>
           ${renderFilters()}
           <div id="activity-list">
-            ${renderTxList(store.history)}
+            ${renderTxList(getOrderedFiltered())}
           </div>
         </div>
         ${renderNav('activity')}
@@ -31,6 +69,7 @@ export function render() {
 
       // Event delegation on the list container (stable — its innerHTML gets
       // replaced, but the element itself persists). One listener covers:
+      //   - "Show more" click → bump page count + re-render
       //   - Memo preview click → open memo modal (checked first; stops
       //     propagation so it doesn't also trigger the tx-row's explorer)
       //   - tx-row click → open the on-chain explorer for that txid
@@ -39,6 +78,13 @@ export function render() {
       // incoming shielded txs).
       const listEl = document.getElementById('activity-list');
       listEl?.addEventListener('click', (e) => {
+        const moreBtn = e.target.closest('[data-show-more]');
+        if (moreBtn) {
+          e.stopPropagation();
+          pagesShown += 1;
+          rerenderList();
+          return;
+        }
         const memoEl = e.target.closest('.tx-memo-click');
         if (memoEl) {
           e.stopPropagation();
@@ -54,9 +100,19 @@ export function render() {
         window.open(`https://explorer.kerrigan.network/#/tx/${txid}`, '_blank', 'noopener');
       });
 
+      // Debounced re-render: coalesce a burst of history mutations into
+      // one rAF tick. Without this, `loadPersistedState`'s push-loop
+      // re-renders the entire (paged) list once per push during boot.
+      let renderQueued = false;
       unsubs.push(subscribe('history', () => {
-        const el = document.getElementById('activity-list');
-        if (el) el.innerHTML = renderTxList(getFilteredHistory());
+        // Invalidate the ordered cache — history changed.
+        orderedCache = null;
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+          renderQueued = false;
+          rerenderList();
+        });
       }));
       return () => { unsubs.forEach(fn => fn()); unsubs = []; };
     },
@@ -81,19 +137,34 @@ function mountFilters() {
       document.querySelectorAll('[data-filter]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       activeFilter = btn.dataset.filter;
-      const listEl = document.getElementById('activity-list');
-      if (listEl) listEl.innerHTML = renderTxList(getFilteredHistory());
+      // Filter changed — reset paging + invalidate cache.
+      pagesShown = 1;
+      orderedCache = null;
+      rerenderList();
     });
   });
 }
 
-function getFilteredHistory() {
-  if (activeFilter === 'all') return store.history;
-  return store.history.filter(tx => tx.pool === activeFilter);
+/** Return ordered+filtered history, memoized for the current
+ *  filter/history snapshot. The `orderedHistory` sort and filter are
+ *  fast individually, but with thousands of txs they add up if we
+ *  redo them on every "Show more" click; one cache lookup is cheap. */
+function getOrderedFiltered() {
+  if (orderedCache) return orderedCache;
+  const filtered = activeFilter === 'all'
+    ? store.history
+    : store.history.filter(tx => tx.pool === activeFilter);
+  orderedCache = orderedHistory(filtered);
+  return orderedCache;
 }
 
-function renderTxList(txs) {
-  if (!txs || txs.length === 0) {
+function rerenderList() {
+  const el = document.getElementById('activity-list');
+  if (el) el.innerHTML = renderTxList(getOrderedFiltered());
+}
+
+function renderTxList(orderedTxs) {
+  if (!orderedTxs || orderedTxs.length === 0) {
     return `
       <div class="empty-state" style="margin-top: var(--space-2xl);">
         <div class="empty-state-icon">${icon('activity')}</div>
@@ -101,42 +172,24 @@ function renderTxList(txs) {
       </div>
     `;
   }
+  // Shared row markup with the dashboard's Recent Activity — see `txRow`
+  // in templates.js. Single source of truth for label/icon/format.
+  // Slice to the currently-visible page count; "Show more" expands.
+  const total = orderedTxs.length;
+  const visibleCount = Math.min(total, pagesShown * PAGE_SIZE);
+  const visible = orderedTxs.slice(0, visibleCount);
+  const rows = visible.map((tx) => txRow(tx, formatKRGN)).join('');
 
-  const sorted = [...txs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  const rows = sorted.map(tx => renderTxRow(tx)).join('');
-
-  return `<div class="card" style="padding: var(--space-sm) var(--space-md);">${rows}</div>`;
-}
-
-function renderTxRow(tx) {
-  const { iconName, iconClass, label, amountStr, amountClass } = classifyTx(tx, formatKRGN);
-
-  const time = tx.timestamp > 0
-    ? new Date(tx.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const remaining = total - visibleCount;
+  const showMore = remaining > 0
+    ? `<button class="btn btn-secondary" data-show-more
+              style="margin: var(--space-md) auto; display: block; min-width: 180px;">
+         Show ${Math.min(remaining, PAGE_SIZE)} more
+         <span style="opacity: 0.6; font-size: 12px; margin-left: 6px;">
+           (${remaining} hidden)
+         </span>
+       </button>`
     : '';
 
-  const memoSafe = tx.memo
-    ? escapeHtml(tx.memo.slice(0, 20)) + (tx.memo.length > 20 ? '...' : '')
-    : '';
-
-  return `
-    <div class="tx-row" ${tx.txid ? `data-txid="${escapeHtml(tx.txid)}" style="cursor: pointer;"` : ''}>
-      <div class="tx-icon ${iconClass}">
-        <span style="width: 18px; height: 18px; display: flex;">${icon(iconName)}</span>
-      </div>
-      <div class="tx-details">
-        <div class="tx-type">${label}</div>
-        <div class="tx-meta">
-          ${time ? `<span>${time}</span>` : ''}
-          ${tx.memo ? `<span class="tx-memo-click" data-memo="${escapeHtml(tx.memo)}">"${memoSafe}"</span>` : ''}
-        </div>
-      </div>
-      <div class="tx-amount">
-        <div class="tx-amount-value ${amountClass}">${amountStr}</div>
-        <div class="tx-confirmations">
-          ${tx.confirmations > 0 ? `${tx.confirmations} conf` : '<span class="text-yellow">pending</span>'}
-        </div>
-      </div>
-    </div>
-  `;
+  return `<div class="card" style="padding: var(--space-sm) var(--space-md);">${rows}</div>${showMore}`;
 }
